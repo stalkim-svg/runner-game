@@ -22,6 +22,8 @@
   #themes a{font-weight:800;font-size:13px;text-decoration:none;color:#fff;border:2px solid #fff;border-radius:12px;
     padding:5px 10px;background:rgba(0,0,0,.28)}
   #themes a.on{background:#fff;color:#333}
+  #buff{position:fixed;left:0;right:0;top:46px;text-align:center;font-weight:800;font-size:17px;color:#fff3a8;
+    text-shadow:0 2px 0 rgba(0,0,0,.4);pointer-events:none}
   #msg{position:fixed;left:0;right:0;top:30%;text-align:center;font-weight:900;font-size:30px;color:#fff;
     text-shadow:0 3px 0 rgba(0,0,0,.35);pointer-events:none;white-space:pre-line;line-height:1.5}
   #msg small{font-size:17px;font-weight:700}
@@ -31,6 +33,7 @@
 <div id="hud"><div id="coins">동전 0</div><div id="bar"><i id="fill"></i></div><div id="prog">0%</div></div>
 <div id="pick"></div>
 <div id="themes"></div>
+<div id="buff"></div>
 <div id="msg"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
@@ -127,43 +130,61 @@ THEMES.night = { ...THEMES.toy, name: '별밤',
    주소 끝에 ?stage=2 처럼 붙이거나 출발 전 화면 위쪽 버튼으로 고름
    ------------------------------------------------------------ */
 const STAGES = [
-  { name: '1 낮의 섬',   theme: 'toy',               gen: { seed: 3,  length: 555, hard: 0, append: true } },  // 손으로 만든 앞부분 뒤에 이어 붙임
-  { name: '2 노을 섬',   theme: 'magic', speed: 8,   gen: { seed: 7,  length: 600, hard: 1 } },
-  { name: '3 별밤 섬',   theme: 'night', speed: 8.5, gen: { seed: 21, length: 650, hard: 2 } },
+  // lv = 레벨(1~3).  terrain 지형 · enemy 악당 · box 아이템 상자
+  { name: '1 낮의 섬',   theme: 'toy',               lv: { terrain: 1, enemy: 1, box: 1 }, gen: { seed: 3,  length: 555, append: true } },  // 손으로 만든 앞부분 뒤에 이어 붙임
+  { name: '2 노을 섬',   theme: 'magic', speed: 8,   lv: { terrain: 2, enemy: 2, box: 2 }, gen: { seed: 7,  length: 600 } },
+  { name: '3 별밤 섬',   theme: 'night', speed: 8.5, lv: { terrain: 3, enemy: 3, box: 3 }, gen: { seed: 21, length: 650 } },
 ];
+/* 레벨이 뜻하는 것
+   지형   1: 낮은 언덕, 짧은 구멍, 한 칸 구덩이 위주
+          2: 언덕이 높아지고 구멍·구덩이가 길어짐, 두 칸 구덩이가 늘어남
+          3: 큰 언덕, 긴 구멍, 구덩이마다 칸을 바꿔야 하는 지그재그
+   악당   1: 걸어오는 슬라임(W), 좌우로 오가는 게(S)
+          2: + 머리 높이로 나는 벌(F) — 점프하면 부딪히고 그냥 달리면 지나감. 전체적으로 빨라짐
+          3: + 가까이 가면 돌진하는 해골(C), 벌이 옆 칸에 같이 나옴
+   상자   아래 표에서 무엇이 나올지 정함 (여러 번 적으면 그만큼 자주 나옴) */
+const BOX_LOOT = {
+  1: ['grow', 'grow', 'coins', 'heart'],
+  2: ['grow', 'coins', 'heart', 'magnet', 'magnet'],
+  3: ['grow', 'heart', 'coins', 'magnet', 'dash', 'dash'],
+};
+// 아이템: grow 커지기 · heart 에너지 +40 · coins 동전 +10 · magnet 자석 8초 · dash 번개 질주 4.5초(무적, 구덩이 위를 달림)
 const QUERY = new URLSearchParams(location.search);
-const STAGE_NO = Math.max(1, Math.min(STAGES.length, +QUERY.get('stage') || 1)), STAGE = STAGES[STAGE_NO - 1];
+const STAGE_NO = Math.max(1, Math.min(STAGES.length, +QUERY.get('stage') || 1)), STAGE = STAGES[STAGE_NO - 1], LV = STAGE.lv;
 const THEME = THEMES[QUERY.get('theme')] || THEMES[STAGE.theme];
 // 적: [거리, 칸 번호, 종류]  W=내 쪽으로 걸어옴  S=좌우 3칸을 오감(칸 번호는 무시)
 const ENEMIES = [[14,1,'W'],[42,1,'W'],[56,0,'W'],[75,2,'W'],[96,1,'S'],[108,0,'W'],[127,1,'S'],[145,1,'W'],[174,1,'S']];
 
 // 스테이지 자동 생성기 — 안전한 칸(동전 길)을 먼저 정하고 그 주변에 구덩이·적·상자를 놓아서 항상 깰 수 있게 만듦
-function genStage({ seed, length, hard }, from) {     // from = 이어 붙일 때 시작 거리
+function genStage({ seed, length }, lv, from) {       // from = 이어 붙일 때 시작 거리
+  const T = lv.terrain, E = lv.enemy;
   let s = seed;
   const r = () => { s = s + 0x6D2B79F5 | 0; let t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
   const pick = a => a[Math.floor(r() * a.length)];
   const level = from ? [] : [[16, 0]], pits = [], coinPath = from ? [] : [[4, 1]], boxes = [], potions = [], big = [], enemies = [];
-  let d = from || 16, h = 0, lane = 1, sinceGap = 0, n = 0;
+  let d = from || 16, h = 0, lane = 1, sinceGap = 0, n = 0, lastPot = from || 0;
   while (d < length - 24) {
     n++;
-    if (r() < 0.16 && sinceGap > 20) {                               // 3칸 전체 구멍 + 착지할 평지
-      const gl = 3 + (hard > 1 && r() < 0.4 ? 1 : 0);
+    if (r() < 0.06 + T * 0.06 && sinceGap > 20) {                               // 3칸 전체 구멍 + 착지할 평지
+      const gl = 3 + Math.floor(r() * T);                            // 지형 1: 3미터 · 2: 3~4 · 3: 3~5
       level.push([gl, null], [8, h]); d += gl + 8; sinceGap = 0; continue;
     }
-    const len = 10 + Math.floor(r() * 5), a = d;                     // 땅 한 토막 (가끔 언덕)
-    if (r() < 0.45) h = Math.max(0, Math.min(5, h + pick([-2, -1.5, 1.5, 2, 3])));
+    const len = 13 - T + Math.floor(r() * (5 - T)), a = d;                     // 땅 한 토막 (가끔 언덕)
+    if (r() < 0.25 + T * 0.12) h = Math.max(0, Math.min(2 + T * 2, h + pick([-1, 1]) * pick([1.5, 2, 1 + T])));
     level.push([len, h]); d += len; sinceGap += len;
     const kind = r();
     if (kind < 0.42) {                                               // 칸 구덩이: 안전한 칸은 남김
-      const nl = Math.max(0, Math.min(2, lane + pick([-1, 0, 1])));
+      const nl = Math.max(0, Math.min(2, lane + (r() < 0.2 + T * 0.2 ? pick([-1, 1]) : 0)));   // 레벨이 높을수록 칸을 자주 바꿔야 함
       if (nl !== lane) { coinPath.push([a + 4, nl]); lane = nl; }
       const others = [0, 1, 2].filter(x => x !== lane);
-      const ls = r() < 0.3 + hard * 0.15 ? others : [pick(others)];
-      pits.push([a + 5, 4, ls.map(x => 'LCR'[x]).join('')]);
-    } else if (kind < 0.62) enemies.push([a + 7, lane, 'W']);
-    else if (kind < 0.74) enemies.push([a + 6, 1, 'S']);
-    else if (kind < 0.84) boxes.push([a + 1.5, lane]);
-    if (n % (hard > 1 ? 6 : 5) === 0) potions.push([a + len - 1.5, lane]);
+      const ls = r() < T * 0.23 ? others : [pick(others)];
+      pits.push([a + 5, 4 + (T > 1 && r() < 0.5 ? 1 : 0), ls.map(x => 'LCR'[x]).join('')]);
+    } else if (kind < 0.60 + E * 0.05) {                             // 악당: 레벨이 오르면 종류가 늘어남
+      const type = pick(E === 1 ? ['W', 'W', 'S'] : E === 2 ? ['W', 'S', 'F', 'F'] : ['W', 'S', 'F', 'C', 'C']);
+      enemies.push([a + (type === 'C' ? 9 : 7), type === 'S' ? 1 : lane, type]);
+      if (E > 2 && type !== 'S' && r() < 0.4) enemies.push([a + 7, pick([0, 1, 2].filter(x => x !== lane)), 'F']);
+    } else if (kind < 0.72 + E * 0.05) boxes.push([a + 1.5, lane]);
+    if (a - lastPot > 46 + T * 9) { potions.push([a + len - 1.5, lane]); lastPot = a; }   // 물약 간격: 레벨이 높을수록 멀어짐
     if (!from && n % 8 === 3 && big.length < 3) big.push([a + 2.5, pick([0, 1, 2].filter(x => x !== lane)), 0.9]);
   }
   level.push([24, 0]);
@@ -171,7 +192,7 @@ function genStage({ seed, length, hard }, from) {     // from = 이어 붙일 �
 }
 if (STAGE.gen) {                                                     // 1번은 배치표 뒤에 이어 붙이고, 2·3번은 통째로 갈아 끼움
   const from = STAGE.gen.append ? LEVEL.reduce((a, x) => a + x[0], 0) : 0;
-  const g = genStage(STAGE.gen, from), fill = (arr, v) => { if (!from) arr.length = 0; arr.push(...v); };
+  const g = genStage(STAGE.gen, LV, from), fill = (arr, v) => { if (!from) arr.length = 0; arr.push(...v); };
   fill(LEVEL, g.level); fill(PITS, g.pits); fill(COIN_PATH, g.coinPath); fill(BOXES, g.boxes);
   fill(POTIONS, g.potions); fill(BIG_COINS, g.big); fill(ENEMIES, g.enemies);
 }
@@ -372,7 +393,11 @@ const boxes = BOXES.map(([d, lane]) => {
 const itemMesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.5),
   new THREE.MeshLambertMaterial({ color: 0xff4fd8, emissive: 0x66104f }));
 itemMesh.visible = false; scene.add(itemMesh);
-const item = { active: false, d: 0, lane: 1, y: 0, vy: 0, vd: 0 };
+const item = { active: false, kind: 'grow', d: 0, lane: 1, y: 0, vy: 0, vd: 0 };
+const itemVis = {};                                  // 아이템 종류별 생김새 (없으면 분홍 보석 도형)
+{ const mg = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.14, 8, 14, Math.PI),
+    new THREE.MeshLambertMaterial({ color: 0xff3b3b, emissive: 0x661010 }));
+  itemVis.magnet = mg; itemMesh.add(mg); }           // 자석: 빨간 말굽 모양
 
 // 적 (도형) — 위에서 밟으면 사라지고, 옆에서 닿으면 다침
 const enemyMat = new THREE.MeshLambertMaterial({ color: THEME.enemy });
@@ -458,10 +483,10 @@ const shadow = new THREE.Mesh(new THREE.CircleGeometry(0.55, 20),
 shadow.rotation.x = -Math.PI / 2; scene.add(shadow);
 
 // 상태
-const p = { d: 0, x: 0, lane: 1, y: 0, vy: 0, jumps: 0, onGround: true, squash: 0, big: false, size: 1, inv: 0 };
+const p = { d: 0, x: 0, lane: 1, y: 0, vy: 0, jumps: 0, onGround: true, squash: 0, big: false, size: 1, inv: 0, magT: 0, dashT: 0 };
 let state = 'ready', timer = 0, coinCount = 0, camY = 0, energy = CONFIG.energyMax, safeD = 0, msgT = 0, stars = 0;
 const $coins = document.getElementById('coins'), $prog = document.getElementById('prog'),
-      $msg = document.getElementById('msg'), $fill = document.getElementById('fill'), $pick = document.getElementById('pick');
+      $msg = document.getElementById('msg'), $fill = document.getElementById('fill'), $pick = document.getElementById('pick'), $buff = document.getElementById('buff');
 // 캐릭터 고르기 버튼 (출발 전 화면에만 보임) — 숫자키 1~4로도 고름
 function setChar(i) {
   charIdx = i;
@@ -487,13 +512,13 @@ STAGES.forEach((st, i) => {
 $themes.addEventListener('pointerdown', e => e.stopPropagation());
 function loseEnergy(n) { energy -= n * (ch().hitScale || 1); return energy <= 0; }
 function gameOver() { energy = 0; state = 'over'; timer = 2.2; setMsg('에너지 끝!\n<small>처음부터 다시 달려요</small>'); }
-const startText = '스테이지 ' + STAGE.name + '\n화면을 누르면 출발!\n<small>← → 또는 좌우로 밀기 = 옆 칸 · 누르기 / 스페이스 = 점프\n보라색 적은 밟기 · 초록 물약은 에너지 · 아래에서 캐릭터 고르기</small>';
+const startText = '스테이지 ' + STAGE.name + '\n<small>지형 ' + '★'.repeat(LV.terrain) + ' · 악당 ' + '★'.repeat(LV.enemy) + ' · 상자 ' + '★'.repeat(LV.box) + '</small>\n화면을 누르면 출발!\n<small>← → 또는 좌우로 밀기 = 옆 칸 · 누르기 / 스페이스 = 점프\n보라색 적은 밟기 · 초록 물약은 에너지 · 아래에서 캐릭터 고르기</small>';
 function setMsg(t) { $msg.innerHTML = t; }
 const curLane = () => Math.max(0, Math.min(2, Math.round(p.x / LW) + 1));
 const heroH = () => 0.9 * (p.big ? CONFIG.bigScale : 1) + 0.2;
 
 function reset() {                 // 처음부터 다시
-  Object.assign(p, { d: 0, x: 0, lane: 1, y: 0, vy: 0, jumps: 0, onGround: true, squash: 0, big: false, size: 1, inv: 0 });
+  Object.assign(p, { d: 0, x: 0, lane: 1, y: 0, vy: 0, jumps: 0, onGround: true, squash: 0, big: false, size: 1, inv: 0, magT: 0, dashT: 0 });
   coinCount = 0; camY = 0; energy = CONFIG.energyMax; safeD = 0; msgT = 0; stars = 0;
   pickups.forEach(k => { k.got = false; k.g.visible = true; });
   $pick.style.display = 'flex'; $themes.style.display = 'flex';
@@ -565,10 +590,13 @@ function update(dt) {
 
   energy -= CONFIG.drain * (ch().drainScale || 1) * dt;                // 시간이 지나면 에너지가 줄어듦
   if (energy <= 0) { gameOver(); return; }
-  p.d += CONFIG.speed * dt;
+  if (p.magT > 0) p.magT -= dt;
+  if (p.dashT > 0) p.dashT -= dt;
+  p.d += CONFIG.speed * (p.dashT > 0 ? 1.7 : 1) * dt;
   const tx = (p.lane - 1) * LW, mx = CONFIG.laneSpeed * dt;
   p.x += Math.max(-mx, Math.min(mx, tx - p.x));
-  const lane = curLane(), g = groundLane(p.d, lane);
+  const lane = curLane(); let g = groundLane(p.d, lane);
+  if (p.dashT > 0 && g === null) { const th = terrainH(p.d); g = th === null ? p.y : th; }   // 번개 질주: 구덩이·구멍 위를 달림
   if (g !== null && g > p.y + CONFIG.stepUp) { fail(); return; }      // 벽에 부딪힘
 
   if (p.onGround && g !== null && g >= p.y - 0.6) {
@@ -591,7 +619,8 @@ function update(dt) {
       p.y = b.bottom - heroH(); p.vy = -3; b.bump = 0.25;
       if (!b.used) {
         b.used = true; b.mesh.material = boxMatUsed;
-        Object.assign(item, { active: true, d: b.d, lane: b.lane, y: b.bottom + 1.3, vy: 7, vd: CONFIG.speed + 3 });
+        const loot = BOX_LOOT[LV.box];
+        Object.assign(item, { active: true, kind: loot[Math.floor(Math.random() * loot.length)], d: b.d, lane: b.lane, y: b.bottom + 1.3, vy: 7, vd: CONFIG.speed + 3 });
       }
     }
   }
@@ -602,8 +631,12 @@ function update(dt) {
     if (ig !== null && item.y <= ig + 0.5 && item.y > ig - 0.8) { item.y = ig + 0.5; item.vy = 0; item.vd = 1.5; }
     if (item.y < -6 || item.d < p.d - 6) item.active = false;
     if (Math.abs(item.d - p.d) < 0.9 && item.lane === lane && Math.abs(item.y - (p.y + 0.5)) < 1.3) {
-      item.active = false;
-      if (p.big) coinCount += 5; else { p.big = true; p.squash = -0.4; }
+      item.active = false; p.squash = -0.35; msgT = 1.2;
+      if (item.kind === 'grow') { if (p.big) coinCount += 5; else p.big = true; setMsg('<small>쑥쑥! 몸이 커졌어요</small>'); }
+      else if (item.kind === 'heart') { energy = Math.min(CONFIG.energyMax, energy + 40); setMsg('<small>에너지 +40</small>'); }
+      else if (item.kind === 'coins') { coinCount += 10; setMsg('<small>동전 +10</small>'); }
+      else if (item.kind === 'magnet') { p.magT = 8; setMsg('<small>자석! 동전이 끌려와요</small>'); }
+      else { p.dashT = 4.5; setMsg('<small>번개 질주!</small>'); }
     }
   }
 
@@ -613,17 +646,22 @@ function update(dt) {
   for (const e of enemies) {
     if (e.dead) continue;
     if (Math.abs(e.d - p.d) < 35) {
-      if (e.type === 'W') {
-        const nd = e.d + e.dir * CONFIG.enemySpeed * dt;
+      if (e.type === 'S') { e.t += dt; e.x = Math.sin(e.t * (1.2 + LV.enemy * 0.4)) * LW; }           // 게: 좌우로 오감
+      else if (e.type !== 'F') {                                         // 슬라임은 걸어오고, 해골은 가까워지면 돌진
+        const sp = e.type === 'C' ? (Math.abs(e.d - p.d) < 16 ? 6 : 0) : CONFIG.enemySpeed * (0.5 + LV.enemy * 0.5);
+        const nd = e.d + e.dir * sp * dt;
         if (groundLane(nd + e.dir * 0.6, e.lane) === null) e.dir *= -1; else e.d = nd;
-      } else { e.t += dt; e.x = Math.sin(e.t * 1.6) * LW; }
+      }
     }
-    e.y = terrainH(e.d) || 0;
+    e.y = (terrainH(e.d) || 0) + (e.type === 'F' ? 1.7 : 0);            // 벌은 머리 높이에 떠 있음
     if (Math.abs(e.d - p.d) < 1.0 && Math.abs(e.x - p.x) < 1.0) {
       if (!p.onGround && p.y >= e.y + 0.15 && p.y <= e.y + 1.3) {       // 너그러운 밟기: 공중에서 닿기만 해도 밟힘
         e.dead = true; e.deadT = 0.3; coinCount += 2;
         p.vy = CONFIG.jumpPower * CONFIG.stompBounce; p.jumps = 1; p.onGround = false; p.squash = -0.25;
-      } else if (p.y < e.y + 0.8 && p.inv <= 0) { hitEnemy(); if (state !== 'play') return; }
+      } else if (p.y < e.y + 0.8 && p.y + heroH() > e.y + 0.1) {         // 몸이 겹칠 때만 (벌 밑으로는 지나감)
+        if (p.dashT > 0) { e.dead = true; e.deadT = 0.3; coinCount += 2; }   // 번개 질주 중에는 악당을 날려버림
+        else if (p.inv <= 0) { hitEnemy(); if (state !== 'play') return; }
+      }
     }
   }
 
@@ -632,9 +670,9 @@ function update(dt) {
     k.got = true; k.g.visible = false;
     if (k.kind === 'potion') energy = Math.min(CONFIG.energyMax, energy + CONFIG.potionGain); else stars++;
   }
-  const mag = ch().magnet || 0.9;                                      // 자석이는 옆 칸 동전도 먹음
+  const mag = p.magT > 0 ? 5 : (ch().magnet || 0.9);                   // 자석이는 옆 칸, 자석 아이템은 3칸 전부
   for (const c of coins) {
-    if (!c.got && Math.abs(c.d - p.d) < (mag > 1 ? 1.4 : 0.8) && Math.abs(c.x - p.x) < mag && Math.abs(c.y - (p.y + 0.5)) < (mag > 1 ? 1.6 : 1.0)) {
+    if (!c.got && Math.abs(c.d - p.d) < (mag > 4 ? 2.6 : mag > 1 ? 1.4 : 0.8) && Math.abs(c.x - p.x) < mag && Math.abs(c.y - (p.y + 0.5)) < (mag > 4 ? 3 : mag > 1 ? 1.6 : 1.0)) {
       c.got = true; c.g.visible = false; coinCount++;
     }
   }
@@ -673,6 +711,9 @@ function draw(dt, t) {
   }
   for (const b of boxes) { b.bump = Math.max(0, b.bump - dt); if (b.model) b.model.scale.setScalar(b.used ? 0.75 : 1); b.mesh.position.y = b.bottom + 0.55 + Math.sin(b.bump / 0.25 * Math.PI) * 0.35; }
   itemMesh.visible = item.active;
+  for (const k in itemVis) itemVis[k].visible = k === item.kind;
+  itemMesh.material.visible = !itemVis[item.kind];
+  $buff.textContent = (p.magT > 0 ? '자석 ' + Math.ceil(p.magT) + '초  ' : '') + (p.dashT > 0 ? '번개 질주 ' + Math.ceil(p.dashT) + '초' : '');
   if (item.active) { itemMesh.position.set((item.lane - 1) * LW, item.y, -item.d); itemMesh.rotation.y = t * 4; }
 
   camY += (Math.max(p.y, 0) - camY) * Math.min(1, dt * 4);
@@ -697,10 +738,10 @@ function draw(dt, t) {
       주소 끝에 ?models=0 을 붙이면 도형 그대로 달림
       (모델: 쿼터니어스 플랫포머 묶음, 저작권 표시 없이 쓸 수 있는 조건)
    ============================================================ */
-const MODELS     = { hero: 'character', enemyW: 'enemy_slime', enemyS: 'enemy_crab', coin: 'coin', star: 'star',
-                     potion: 'heart', item: 'fruit', box: 'cube_item', tree: 'tree', cloud: 'cloud' };
-const MODEL_SIZE = { hero: 1.25, enemyW: 0.95, enemyS: 0.95, coin: 0.75, star: 1.4,
-                     potion: 0.8, item: 0.9, box: 1.1, tree: 5.5, cloud: 2.4 };          // 키(높이)
+const MODELS     = { hero: 'character', enemyW: 'enemy_slime', enemyS: 'enemy_crab', enemyF: 'enemy_bee', enemyC: 'enemy_skull',
+                     coin: 'coin', star: 'star', potion: 'heart', item: 'fruit', dash: 'thunder', box: 'cube_item', tree: 'tree', cloud: 'cloud' };
+const MODEL_SIZE = { hero: 1.25, enemyW: 0.95, enemyS: 0.95, enemyF: 0.85, enemyC: 1.0, coin: 0.75, star: 1.4,
+                     potion: 0.8, item: 0.9, dash: 1.0, box: 1.1, tree: 5.5, cloud: 2.4 };   // 키(높이)
 if (THREE.GLTFLoader && new URLSearchParams(location.search).get('models') !== '0') {
   const loader = new THREE.GLTFLoader(), fixed = new Set();
   const load = key => new Promise((res, rej) => loader.load('models/' + MODELS[key] + '.glb', res, undefined, rej));
@@ -727,9 +768,9 @@ if (THREE.GLTFLoader && new URLSearchParams(location.search).get('models') !== '
     setChar(charIdx);
   }).catch(warn);
 
-  for (const [key, type] of [['enemyW', 'W'], ['enemyS', 'S']]) load(key).then(g => {
+  for (const [key, type] of [['enemyW', 'W'], ['enemyS', 'S'], ['enemyF', 'F'], ['enemyC', 'C']]) if (enemies.some(e => e.type === type)) load(key).then(g => {
     prep(g.scene);
-    const walk = g.animations.find(a => a.name.endsWith('|Walk'));
+    const walk = g.animations.find(a => /\|(Walk|Flying)$/.test(a.name));
     for (const e of enemies) if (e.type === type) {
       const c = THREE.SkeletonUtils.clone(g.scene);
       e.g.children.forEach(k => k.visible = false); e.g.add(fit(c, MODEL_SIZE[key]));
@@ -741,7 +782,8 @@ if (THREE.GLTFLoader && new URLSearchParams(location.search).get('models') !== '
   still('coin', mk => coins.forEach(c => { c.g.children[0].visible = false; c.g.add(mk(true)); }));
   for (const [key, kind] of [['star', 'star'], ['potion', 'potion']])
     still(key, mk => pickups.forEach(k => { if (k.kind !== kind) return; k.g.children.forEach(x => x.visible = false); k.g.add(mk(true)); }));
-  still('item', mk => { itemMesh.material.visible = false; itemMesh.add(mk(true)); });
+  for (const [key, kind] of [['item', 'grow'], ['potion', 'heart'], ['dash', 'dash'], ['coin', 'coins']])
+    still(key, mk => { const m = mk(true); m.scale.setScalar(1.25); itemVis[kind] = m; itemMesh.add(m); });
   still('box', mk => { boxMatNew.visible = boxMatUsed.visible = false; boxes.forEach(b => { b.model = mk(true); b.mesh.add(b.model); }); });
   still('tree', mk => { treeGroup.visible = false; treeSpots.forEach(t => { const m = mk(); m.scale.setScalar(0.45 + t.sc * 0.2); m.rotation.y = t.x * 3; m.position.set(t.x, t.y - 0.05, t.z); scene.add(m); }); });
   still('cloud', mk => {
