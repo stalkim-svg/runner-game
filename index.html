@@ -1,0 +1,772 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>앞으로 달리기 - 3칸</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#8fd3ff;
+    font-family:-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+    touch-action:none;user-select:none;-webkit-user-select:none}
+  canvas{display:block}
+  #hud{position:fixed;top:14px;left:16px;right:16px;display:flex;justify-content:space-between;
+    font-weight:800;font-size:22px;color:#fff;text-shadow:0 2px 0 rgba(0,0,0,.35);pointer-events:none}
+  #bar{width:38%;max-width:260px;height:18px;border:3px solid #fff;border-radius:12px;background:rgba(0,0,0,.25);overflow:hidden;margin-top:3px}
+  #fill{display:block;height:100%;width:100%;background:#ff5a6e}
+  #pick{position:fixed;left:0;right:0;bottom:6%;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;padding:0 10px}
+  #pick button{font:inherit;font-weight:800;font-size:15px;border:3px solid #fff;border-radius:14px;padding:8px 12px;
+    color:#fff;background:rgba(0,0,0,.28);line-height:1.3}
+  #pick button.on{background:#fff;color:#333}
+  #pick small{display:block;font-size:11px;font-weight:600}
+  #themes{position:fixed;left:0;right:0;top:54px;display:flex;gap:6px;justify-content:center;flex-wrap:wrap;padding:0 10px}
+  #themes a{font-weight:800;font-size:13px;text-decoration:none;color:#fff;border:2px solid #fff;border-radius:12px;
+    padding:5px 10px;background:rgba(0,0,0,.28)}
+  #themes a.on{background:#fff;color:#333}
+  #msg{position:fixed;left:0;right:0;top:30%;text-align:center;font-weight:900;font-size:30px;color:#fff;
+    text-shadow:0 3px 0 rgba(0,0,0,.35);pointer-events:none;white-space:pre-line;line-height:1.5}
+  #msg small{font-size:17px;font-weight:700}
+</style>
+</head>
+<body>
+<div id="hud"><div id="coins">동전 0</div><div id="bar"><i id="fill"></i></div><div id="prog">0%</div></div>
+<div id="pick"></div>
+<div id="themes"></div>
+<div id="msg"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/SkeletonUtils.js"></script>
+<script>
+/* ============================================================
+   1) 설정표 — 손맛은 여기 숫자만 바꾸면 됩니다
+   ============================================================ */
+const CONFIG = {
+  speed: 7.5,        // 달리는 속도 (초당 미터)
+  gravity: 32,       // 중력 (클수록 빨리 떨어짐)
+  jumpPower: 11.5,   // 점프 힘 (클수록 높이 뜀)
+  maxJumps: 2,       // 공중에서 몇 번까지 점프 (2 = 2단 점프)
+  energyMax: 100,    // 에너지 통 크기
+  drain: 3,          // 1초마다 줄어드는 에너지
+  pitCost: 20,       // 구덩이에 빠지면 깎이는 에너지
+  enemyCost: 15,     // 적에게 닿으면 깎이는 에너지
+  potionGain: 25,    // 물약 하나가 채워주는 에너지
+  respawnBack: 8,    // 실패하면 몇 미터 뒤에서 다시 시작
+  laneWidth: 2,      // 한 칸 너비
+  laneSpeed: 14,     // 옆 칸으로 옮겨가는 빠르기
+  sideWidth: 5,      // 달리는 3칸 양옆에 붙은 나무 심는 땅의 너비
+  islandDepth: 5,    // 하늘 섬의 두께
+  shadows: true,     // 햇빛 그림자 켜기 (폰이 느리면 false)
+  boxHeight: 2.4,    // 상자 바닥이 땅에서 떠 있는 높이
+  bigScale: 1.45,    // 아이템 먹었을 때 커지는 배율
+  enemySpeed: 1.5,   // 걸어오는 적의 빠르기
+  stompBounce: 0.8,  // 적을 밟고 튀어 오르는 힘 (점프 힘의 배율)
+  hitSafeTime: 1.5,  // 적에게 맞은 뒤 깜빡이며 안 맞는 시간(초)
+  stepUp: 0.35,      // 이 높이까지는 턱을 그냥 올라감
+  camBack: 8,        // 카메라가 캐릭터 뒤로 떨어진 거리
+  camUp: 6,          // 카메라 높이
+  camLookAhead: 9,   // 카메라가 캐릭터 앞 몇 미터를 보는지
+};
+
+/* ============================================================
+   2) 스테이지 배치표
+   ============================================================ */
+// 땅 높이: [길이, 도착 높이]  앞 높이와 다르면 언덕. null = 3칸 전체 구멍(점프)
+const LEVEL = [
+  [16,0],[8,2],[6,2],[8,0],[8,0],[3,null],
+  [10,0],[10,3],[8,3],[3,null],[6,3],[12,0],
+  [8,0],[6,1.5],[3,null],[6,1.5],[6,0],
+  [10,0],[10,4],[6,4],[14,0],[18,0],
+];
+// 칸별 구덩이: [시작 거리, 길이, 칸]  L=왼쪽 C=가운데 R=오른쪽
+const PITS = [
+  [20,4,'C'],[32,4,'LR'],[52,4,'CR'],[64,4,'LC'],[72,4,'C'],[88,4,'R'],[100,4,'CR'],
+  [122,4,'LC'],[130,5,'R'],[138,4,'C'],[148,4,'LR'],[158,4,'C'],[164,4,'L'],
+];
+// 동전 길: [거리, 칸 번호]  0=왼쪽 1=가운데 2=오른쪽 — 그 거리부터 그 칸으로 이어짐
+const COIN_PATH = [[4,1],[17,0],[28,1],[48,0],[60,2],[84,1],[97,0],[119,2],[129,1],[137,0],[146,1],[155,2],[166,1]];
+// 아이템 상자: [거리, 칸 번호]
+const BOXES = [[26,1],[84,1],[168,1]];
+// 에너지 물약: [거리, 칸 번호]
+const POTIONS = [[38,1],[70,2],[110,0],[150,1]];
+// 별 동전(스테이지에 3개, 먹기 어려운 자리): [거리, 칸 번호, 땅에서 높이]
+const BIG_COINS = [[44,2,0.9],[78.5,2,3.4],[160,0,0.9]];
+// 캐릭터: 적지 않은 값은 설정표 값을 그대로 씀
+const CHARS = [
+  { name: '통통이', desc: '기본 · 2단 점프',          color: 0xff5a4d, cap: 0x3d6bff, shape: 'box' },
+  { name: '풍선이', desc: '3단 점프 · 천천히 낙하',   color: 0x4db8ff, cap: 0xffffff, shape: 'ball', maxJumps: 3, gravity: 25 },
+  { name: '자석이', desc: '옆 칸 동전도 끌어옴',      color: 0xffc83c, cap: 0xd23c3c, shape: 'gem',  magnet: 2.6 },
+  { name: '튼튼이', desc: '에너지가 천천히 줄어듦',   color: 0x4fcf70, cap: 0x2a6b3c, shape: 'can',  drainScale: 0.6, hitScale: 0.6 },
+];
+// 비주얼 테마: 주소 끝에 ?theme=이름 을 붙이거나 출발 전 화면 위쪽 버튼으로 바꿈
+const THEMES = {
+  basic:  { name: '기본',        skyTop: 0x8fd3ff, skyBottom: 0x8fd3ff, water: 0x3aa0e0, grassA: 0x6fcf5a, grassB: 0x5cbd4a, dirt: 0xb9814f,
+            tree: 'cone',  trunk: 0x8a5a33, leaf: [0x3f9e4a], coin: 0xffd23c, box: 0xffa23c, enemy: 0x7a3cff },
+  toy:    { name: '둥근 장난감', skyTop: 0x4fb4ff, skyBottom: 0xd9f3ff, water: 0x45c4f5, grassA: 0x9be65a, grassB: 0x86d946, dirt: 0xf5a85c,
+            tree: 'round', trunk: 0xc98a4a, leaf: [0x43c46a, 0x6fd64e, 0x2fb38a], coin: 0xffdf3b, box: 0xff8a3c, enemy: 0x9a5cff },
+  block:  { name: '블록',        skyTop: 0x7fd4ff, skyBottom: 0xb9ecff, water: 0x3f8fe0, grassA: 0x7ed957, grassB: 0x62bf45, dirt: 0x9c6b3f,
+            tree: 'block', trunk: 0x7a5230, leaf: [0x3fa64a, 0x57bf52], coin: 0xffcf33, box: 0xe8a23c, enemy: 0x6a4cff, enemyBox: true, flat: true },
+  pastel: { name: '파스텔',      skyTop: 0xf6b8d2, skyBottom: 0xfff0d9, water: 0xc4dcf5, grassA: 0x9fdcc4, grassB: 0x82c9ae, dirt: 0xe9aaa0,
+            tree: 'thin',  trunk: 0xd9b8a8, leaf: [0x86bdb4, 0xa5cfc0, 0x6fa8a8], coin: 0xfff0a0, box: 0xf4b183, enemy: 0x6c6ea0, flat: true, light: 0.78 },
+  candy:  { name: '과자 나라',   skyTop: 0xffa8d4, skyBottom: 0xfff2f8, water: 0xffb3d6, grassA: 0xffe3ef, grassB: 0xffb4d4, dirt: 0x8a4b2a,
+            tree: 'lolli', trunk: 0xffffff, leaf: [0xff5fa2, 0xffd23c, 0x6fe0c0, 0xb07cff], coin: 0xffc83c, box: 0xff6fae, enemy: 0x5a2d82, light: 0.68 },
+};
+// 매직 아워: 둥근 장난감과 같은 세상에 해 질 녘 조명만 바꾼 것
+//   sunPos = 해가 캐릭터 기준 어디에 있는지 [옆, 높이, 앞뒤(음수=앞쪽)]  낮을수록 그림자가 길어짐
+THEMES.magic = { ...THEMES.toy, name: '매직 아워',
+  skyTop: 0x2f3f8f, skyMid: 0xff7f86, skyBottom: 0xffc27a,
+  hemiSky: 0xc9b8ff, hemiGround: 0xff9a6a, hemiI: 0.86, sunColor: 0xffa85a, sunI: 1.2, sunPos: [18, 12, -16],
+  glowColor: 0xff9a4a, glowPos: [-22, 1.5], glowSize: 120, cloudTint: 0xffb9a0 };
+// 별밤: 달빛과 별
+THEMES.night = { ...THEMES.toy, name: '별밤',
+  skyTop: 0x0a0f33, skyMid: 0x232c6b, skyBottom: 0x4656a6,
+  hemiSky: 0x93a8ff, hemiGround: 0x3d4c80, hemiI: 0.8, sunColor: 0xcfe0ff, sunI: 0.75, sunPos: [-12, 16, -8],
+  glowColor: 0xe6eeff, glowPos: [20, 14], glowSize: 24, cloudTint: 0x8e9ad8, stars: true };
+
+/* ------------------------------------------------------------
+   스테이지 목록 — 스테이지마다 시간대(테마)가 다름
+   1번은 위의 배치표(손으로 만든 것), 2·3번은 자동 생성(씨앗 숫자를 바꾸면 다른 지형)
+   주소 끝에 ?stage=2 처럼 붙이거나 출발 전 화면 위쪽 버튼으로 고름
+   ------------------------------------------------------------ */
+const STAGES = [
+  { name: '1 낮의 섬',   theme: 'toy',               gen: { seed: 3,  length: 555, hard: 0, append: true } },  // 손으로 만든 앞부분 뒤에 이어 붙임
+  { name: '2 노을 섬',   theme: 'magic', speed: 8,   gen: { seed: 7,  length: 600, hard: 1 } },
+  { name: '3 별밤 섬',   theme: 'night', speed: 8.5, gen: { seed: 21, length: 650, hard: 2 } },
+];
+const QUERY = new URLSearchParams(location.search);
+const STAGE_NO = Math.max(1, Math.min(STAGES.length, +QUERY.get('stage') || 1)), STAGE = STAGES[STAGE_NO - 1];
+const THEME = THEMES[QUERY.get('theme')] || THEMES[STAGE.theme];
+// 적: [거리, 칸 번호, 종류]  W=내 쪽으로 걸어옴  S=좌우 3칸을 오감(칸 번호는 무시)
+const ENEMIES = [[14,1,'W'],[42,1,'W'],[56,0,'W'],[75,2,'W'],[96,1,'S'],[108,0,'W'],[127,1,'S'],[145,1,'W'],[174,1,'S']];
+
+// 스테이지 자동 생성기 — 안전한 칸(동전 길)을 먼저 정하고 그 주변에 구덩이·적·상자를 놓아서 항상 깰 수 있게 만듦
+function genStage({ seed, length, hard }, from) {     // from = 이어 붙일 때 시작 거리
+  let s = seed;
+  const r = () => { s = s + 0x6D2B79F5 | 0; let t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  const pick = a => a[Math.floor(r() * a.length)];
+  const level = from ? [] : [[16, 0]], pits = [], coinPath = from ? [] : [[4, 1]], boxes = [], potions = [], big = [], enemies = [];
+  let d = from || 16, h = 0, lane = 1, sinceGap = 0, n = 0;
+  while (d < length - 24) {
+    n++;
+    if (r() < 0.16 && sinceGap > 20) {                               // 3칸 전체 구멍 + 착지할 평지
+      const gl = 3 + (hard > 1 && r() < 0.4 ? 1 : 0);
+      level.push([gl, null], [8, h]); d += gl + 8; sinceGap = 0; continue;
+    }
+    const len = 10 + Math.floor(r() * 5), a = d;                     // 땅 한 토막 (가끔 언덕)
+    if (r() < 0.45) h = Math.max(0, Math.min(5, h + pick([-2, -1.5, 1.5, 2, 3])));
+    level.push([len, h]); d += len; sinceGap += len;
+    const kind = r();
+    if (kind < 0.42) {                                               // 칸 구덩이: 안전한 칸은 남김
+      const nl = Math.max(0, Math.min(2, lane + pick([-1, 0, 1])));
+      if (nl !== lane) { coinPath.push([a + 4, nl]); lane = nl; }
+      const others = [0, 1, 2].filter(x => x !== lane);
+      const ls = r() < 0.3 + hard * 0.15 ? others : [pick(others)];
+      pits.push([a + 5, 4, ls.map(x => 'LCR'[x]).join('')]);
+    } else if (kind < 0.62) enemies.push([a + 7, lane, 'W']);
+    else if (kind < 0.74) enemies.push([a + 6, 1, 'S']);
+    else if (kind < 0.84) boxes.push([a + 1.5, lane]);
+    if (n % (hard > 1 ? 6 : 5) === 0) potions.push([a + len - 1.5, lane]);
+    if (!from && n % 8 === 3 && big.length < 3) big.push([a + 2.5, pick([0, 1, 2].filter(x => x !== lane)), 0.9]);
+  }
+  level.push([24, 0]);
+  return { level, pits, coinPath, boxes, potions, big, enemies };
+}
+if (STAGE.gen) {                                                     // 1번은 배치표 뒤에 이어 붙이고, 2·3번은 통째로 갈아 끼움
+  const from = STAGE.gen.append ? LEVEL.reduce((a, x) => a + x[0], 0) : 0;
+  const g = genStage(STAGE.gen, from), fill = (arr, v) => { if (!from) arr.length = 0; arr.push(...v); };
+  fill(LEVEL, g.level); fill(PITS, g.pits); fill(COIN_PATH, g.coinPath); fill(BOXES, g.boxes);
+  fill(POTIONS, g.potions); fill(BIG_COINS, g.big); fill(ENEMIES, g.enemies);
+}
+if (STAGE.speed) CONFIG.speed = STAGE.speed;
+
+/* ============================================================
+   3) 게임 본체
+   ============================================================ */
+const LW = CONFIG.laneWidth;
+const segs = []; let total = 0;
+{ let h = 0;
+  for (const [len, to] of LEVEL) {
+    if (to === null) segs.push({ start: total, end: total + len, len, gap: true, h0: h, h1: h });
+    else { segs.push({ start: total, end: total + len, len, gap: false, h0: h, h1: to }); h = to; }
+    total += len;
+  } }
+const pits = PITS.map(([s, len, ls]) => ({ start: s, end: s + len, lanes: [...ls].map(c => 'LCR'.indexOf(c)) }));
+const hAt = (s, d) => s.h0 + (s.h1 - s.h0) * (d - s.start) / s.len;
+function segAt(d) { for (const s of segs) if (d >= s.start && d < s.end) return s; return null; }
+function terrainH(d) {             // 구덩이 무시한 땅 높이 (전체 구멍이면 null)
+  const s = segAt(Math.max(d, 0)); return !s || s.gap ? null : hAt(s, Math.max(d, 0));
+}
+function inPit(d, lane) { return pits.some(q => d >= q.start && d < q.end && q.lanes.includes(lane)); }
+function groundLane(d, lane) {     // 그 칸의 땅 높이 (구덩이·구멍이면 null)
+  const h = terrainH(d); return h === null || inPit(d, lane) ? null : h;
+}
+function coinLane(d) {             // 동전 길의 좌우 위치 (칸 사이를 비스듬히 넘어감)
+  let i = 0; while (i + 1 < COIN_PATH.length && COIN_PATH[i + 1][0] - 4 <= d) i++;
+  if (i > 0 && d < COIN_PATH[i][0]) {
+    const t = (d - (COIN_PATH[i][0] - 4)) / 4; return COIN_PATH[i - 1][1] + (COIN_PATH[i][1] - COIN_PATH[i - 1][1]) * t;
+  }
+  return COIN_PATH[i][1];
+}
+
+const scene = new THREE.Scene();
+{ const hex = c => '#' + c.toString(16).padStart(6, '0');           // 하늘: 위에서 아래로 색이 번짐
+  const cv = document.createElement('canvas'); cv.width = 2; cv.height = 256;
+  const cx = cv.getContext('2d'), gr = cx.createLinearGradient(0, 0, 0, 256);
+  gr.addColorStop(0, hex(THEME.skyTop)); if (THEME.skyMid) gr.addColorStop(0.3, hex(THEME.skyMid));
+  gr.addColorStop(THEME.skyMid ? 0.48 : 0.55, hex(THEME.skyBottom)); gr.addColorStop(1, hex(THEME.skyBottom));
+  cx.fillStyle = gr; cx.fillRect(0, 0, 2, 256);
+  scene.background = new THREE.CanvasTexture(cv); }
+scene.fog = new THREE.Fog(THEME.skyBottom, 40, 100);
+const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 200);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.fov = w < h ? 80 : 60;   // 세로 화면(폰)은 더 넓게
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize); resize();
+
+const LIGHT = THEME.light || 1;    // 밝은 색 테마는 빛을 줄여야 색이 하얗게 날아가지 않음
+// 조명: 하늘빛(전체를 은은하게) + 햇빛(따뜻한 색, 그림자를 만듦)
+scene.add(new THREE.HemisphereLight(THEME.hemiSky || 0xdff1ff, THEME.hemiGround || 0x9fc47a, (THEME.hemiI || 0.66) * LIGHT));
+const sun = new THREE.DirectionalLight(THEME.sunColor || 0xfff0cf, (THEME.sunI || 0.86) * LIGHT); scene.add(sun); scene.add(sun.target);
+const SUN_POS = THEME.sunPos || [9, 18, 6], GLOW_POS = THEME.glowPos || [-20, 7];
+if (CONFIG.shadows) {
+  renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  sun.castShadow = true;
+  const sc = sun.shadow.camera; sc.left = -22; sc.right = 22; sc.top = 34; sc.bottom = -20; sc.near = 1; sc.far = 70;
+  sun.shadow.mapSize.set(innerWidth < 700 ? 1024 : 2048, innerWidth < 700 ? 1024 : 2048);
+  sun.shadow.bias = -0.0008; sun.shadow.normalBias = 0.04;
+}
+// 해무리: 하늘 멀리 번지는 햇빛
+const glow = (() => {
+  const cv = document.createElement('canvas'); cv.width = cv.height = 128;
+  const cx = cv.getContext('2d'), gr = cx.createRadialGradient(64, 64, 0, 64, 64, 64);
+  gr.addColorStop(0, 'rgba(255,255,240,1)'); gr.addColorStop(0.18, 'rgba(255,244,200,0.75)'); gr.addColorStop(1, 'rgba(255,230,170,0)');
+  cx.fillStyle = gr; cx.fillRect(0, 0, 128, 128);
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(cv), blending: THREE.AdditiveBlending, depthWrite: false, fog: false, transparent: true }));
+  s.material.color.set(THEME.glowColor || 0xffffff);
+  s.scale.set(THEME.glowSize || 70, THEME.glowSize || 70, 1); scene.add(s); return s;
+})();
+
+// 별 (별밤 테마만)
+let starsPts = null;
+if (THEME.stars) {
+  const pos = [];
+  for (let i = 0; i < 420; i++) {
+    const a = Math.random() * Math.PI * 2, e = 0.04 + Math.random() * 1.4, R = 160;
+    pos.push(R * Math.cos(e) * Math.cos(a), R * Math.sin(e), R * Math.cos(e) * Math.sin(a));
+  }
+  const sg = new THREE.BufferGeometry(); sg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  starsPts = new THREE.Points(sg, new THREE.PointsMaterial({ color: 0xffffff, size: 1.2, fog: false }));
+  scene.add(starsPts);
+}
+
+// 땅 — 하늘에 떠 있는 섬. 칸마다 따로 만들어서 구덩이가 뚫려 보임
+const BOTTOM = -CONFIG.islandDepth, HALF = LW * 1.5, SIDE = CONFIG.sideWidth;
+const grassA = [], grassB = [], dirt = [], sideA = [], sideB = [];
+function quad(arr, a, b, c, d) { arr.push(...a, ...b, ...c, ...a, ...c, ...d); }
+for (let lane = 0; lane < 3; lane++) {
+  const x0 = (lane - 1) * LW - LW / 2, x1 = x0 + LW;
+  for (const s of segs) {
+    if (s.gap) continue;
+    const cuts = [s.start, s.end];
+    for (const q of pits) if (q.lanes.includes(lane))
+      for (const c of [q.start, q.end]) if (c > s.start && c < s.end) cuts.push(c);
+    cuts.sort((a, b) => a - b);
+    for (let i = 0; i + 1 < cuts.length; i++) {
+      const a = cuts[i], b = cuts[i + 1];
+      if (b - a < 0.001 || inPit((a + b) / 2, lane)) continue;
+      const ha = hAt(s, a), hb = hAt(s, b);
+      quad(dirt, [x0, BOTTOM, -a], [x0, ha, -a], [x0, hb, -b], [x0, BOTTOM, -b]);
+      quad(dirt, [x1, BOTTOM, -a], [x1, BOTTOM, -b], [x1, hb, -b], [x1, ha, -a]);
+      quad(dirt, [x0, BOTTOM, -a], [x1, BOTTOM, -a], [x1, ha, -a], [x0, ha, -a]);
+      quad(dirt, [x0, BOTTOM, -b], [x0, hb, -b], [x1, hb, -b], [x1, BOTTOM, -b]);
+      for (let d = a; d < b - 0.001;) {
+        const e = Math.min(b, (Math.floor(d / 2 + 0.0001) + 1) * 2);
+        quad((Math.floor(d / 2 + 0.0001) + lane) % 2 ? grassA : grassB,
+          [x0, hAt(s, d), -d], [x1, hAt(s, d), -d], [x1, hAt(s, e), -e], [x0, hAt(s, e), -e]);
+        d = e;
+      }
+    }
+  }
+}
+// 양옆 땅 — 달리는 3칸에 붙어 같은 높이로 이어지는, 나무 심는 자리 (달릴 수는 없음)
+for (const s of segs) {
+  if (s.gap) continue;
+  const z0 = -s.start, z1 = -s.end;
+  for (const sg of [-1, 1]) {
+    const xi = sg * HALF, xo = sg * (HALF + SIDE), xl = Math.min(xi, xo), xr = Math.max(xi, xo);
+    for (const x of [xi, xo]) quad(dirt, [x, BOTTOM, z0], [x, s.h0, z0], [x, s.h1, z1], [x, BOTTOM, z1]);   // 안쪽·바깥 벽
+    quad(dirt, [xl, BOTTOM, z0], [xr, BOTTOM, z0], [xr, s.h0, z0], [xl, s.h0, z0]);                         // 앞면
+    quad(dirt, [xl, BOTTOM, z1], [xl, s.h1, z1], [xr, s.h1, z1], [xr, BOTTOM, z1]);                         // 뒷면
+    for (let d = s.start; d < s.end - 0.001;) {
+      const e = Math.min(s.end, (Math.floor(d / 2 + 0.0001) + 1) * 2);
+      quad(Math.floor(d / 2 + 0.0001) % 2 ? sideA : sideB, [xl, hAt(s, d), -d], [xr, hAt(s, d), -d], [xr, hAt(s, e), -e], [xl, hAt(s, e), -e]);
+      d = e;
+    }
+  }
+}
+function addMesh(arr, color, top) {                 // top = 윗면(그림자를 받음)
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
+  g.computeVertexNormals();
+  const m = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ color, side: top ? THREE.FrontSide : THREE.DoubleSide }));
+  m.receiveShadow = !!top; scene.add(m);
+}
+const darker = (c, k) => new THREE.Color(c).multiplyScalar(k);
+addMesh(grassA, THEME.grassA, true); addMesh(grassB, THEME.grassB, true); addMesh(dirt, THEME.dirt);
+addMesh(sideA, darker(THEME.grassB, 0.78), true); addMesh(sideB, darker(THEME.grassB, 0.7), true);
+
+// 동전 — 동전 길을 따라 자동으로 놓음
+const coins = [];
+const coinGeo = new THREE.CylinderGeometry(0.38, 0.38, 0.1, 18);
+const coinMat = new THREE.MeshLambertMaterial({ color: THEME.coin, emissive: 0x7a5a00 });
+for (let d = COIN_PATH[0][0]; d < total - 8; d += 2) {
+  const s = segAt(d), x = (coinLane(d) - 1) * LW;
+  let y = (s.gap ? s.h0 : hAt(s, d)) + 0.9;
+  for (const q of segs) if (q.gap) {                 // 구멍 위에서는 포물선으로 떠서 "여기서 점프"를 알려줌
+    const k = (d - (q.start + q.end) / 2) / (q.len / 2 + 2.5);
+    if (Math.abs(k) < 1) y += 1.3 * (1 - k * k);
+  }
+  const m = new THREE.Mesh(coinGeo, coinMat); m.rotation.z = Math.PI / 2;
+  const g = new THREE.Group(); g.add(m); g.position.set(x, y, -d); scene.add(g);
+  coins.push({ d, x, y, g, got: false });
+}
+
+// 물약·별 동전
+const pickups = [];
+const potionMat = new THREE.MeshLambertMaterial({ color: 0x35e07a, emissive: 0x0a5a2a });
+const starMat = new THREE.MeshLambertMaterial({ color: 0xff8a1e, emissive: 0x7a3000 });
+for (const [d, lane] of POTIONS) {
+  const g = new THREE.Group();
+  const bottle = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.38, 0.6, 12), potionMat); g.add(bottle);
+  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.3, 8), eyeWhite()); neck.position.y = 0.42; g.add(neck);
+  const y = (terrainH(d) || 0) + 0.8; g.position.set((lane - 1) * LW, y, -d); scene.add(g);
+  pickups.push({ kind: 'potion', d, x: (lane - 1) * LW, y, g, got: false });
+}
+for (const [d, lane, up] of BIG_COINS) {
+  const s = segAt(d), g = new THREE.Group();
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.75, 0.16, 5), starMat); m.rotation.z = Math.PI / 2; g.add(m);
+  const y = (s.gap ? s.h0 : hAt(s, d)) + up; g.position.set((lane - 1) * LW, y, -d); scene.add(g);
+  pickups.push({ kind: 'star', d, x: (lane - 1) * LW, y, g, got: false });
+}
+function eyeWhite() { return new THREE.MeshLambertMaterial({ color: 0xffffff }); }
+
+// 아이템 상자
+const boxMatNew = new THREE.MeshLambertMaterial({ color: THEME.box, emissive: 0x4a2a00 });
+const boxMatUsed = new THREE.MeshLambertMaterial({ color: 0x9a8f80 });
+const boxes = BOXES.map(([d, lane]) => {
+  const bottom = terrainH(d) + CONFIG.boxHeight;
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(1.1, 1.1, 1.1), boxMatNew);
+  mesh.position.set((lane - 1) * LW, bottom + 0.55, -d); scene.add(mesh);
+  const mark = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 1.1),
+    new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.22 }));
+  mark.rotation.x = -Math.PI / 2; mark.position.set((lane - 1) * LW, terrainH(d) + 0.06, -d); scene.add(mark);
+  return { d, lane, bottom, mesh, used: false, bump: 0 };
+});
+
+// 아이템 (상자에서 튀어나와 앞으로 굴러감)
+const itemMesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.5),
+  new THREE.MeshLambertMaterial({ color: 0xff4fd8, emissive: 0x66104f }));
+itemMesh.visible = false; scene.add(itemMesh);
+const item = { active: false, d: 0, lane: 1, y: 0, vy: 0, vd: 0 };
+
+// 적 (도형) — 위에서 밟으면 사라지고, 옆에서 닿으면 다침
+const enemyMat = new THREE.MeshLambertMaterial({ color: THEME.enemy });
+const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+const enemies = ENEMIES.map(([d, lane, type], i) => {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(THEME.enemyBox ? new THREE.BoxGeometry(0.85, 0.95, 0.85) : new THREE.SphereGeometry(0.5, 14, 10), enemyMat);
+  body.scale.y = 0.85; body.position.y = 0.42; g.add(body);
+  for (const sx of [-0.2, 0.2]) {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 6), eyeMat);
+    eye.position.set(sx, 0.55, 0.42); g.add(eye);
+  }
+  scene.add(g);
+  return { d0: d, d, lane, type, t0: i * 1.3, t: i * 1.3, dir: -1, x: (lane - 1) * LW, y: 0, dead: false, deadT: 0, g };
+});
+
+// 길 옆 나무 (속도감용)
+const treeGroup = new THREE.Group(), treeSpots = []; scene.add(treeGroup);
+const trunkMat = new THREE.MeshLambertMaterial({ color: THEME.trunk });
+const leafMats = THEME.leaf.map(c => new THREE.MeshLambertMaterial({ color: c }));
+for (let i = 0; i < Math.round(total / 3.4); i++) {  // 양옆 땅 위, 구멍이 아닌 곳에만 심음 (길이에 맞춰 수를 정함)
+  const side = i % 2 ? 1 : -1;
+  let d = 0, gy = null;
+  for (let k = 0; k < 12 && gy === null; k++) { d = 3 + Math.random() * (total - 6); gy = terrainH(d); }
+  if (gy === null) continue;
+  const x = side * (HALF + 0.9 + Math.random() * (SIDE - 1.6)), z = -d;
+  const sc = 0.8 + Math.random() * 1.2, leafMat = leafMats[i % leafMats.length];
+  treeSpots.push({ x, z, sc, y: gy });
+  const tg = new THREE.Group(), ts = 0.42 + sc * 0.12;
+  tg.position.set(x, gy + 1.2 * ts, z); tg.scale.setScalar(ts); treeGroup.add(tg);
+  const add = (geo, mat, y) => { const m = new THREE.Mesh(geo, mat); m.position.y = y; m.castShadow = true; tg.add(m); };
+  if (THEME.tree === 'round') {            // 동글동글 나무
+    add(new THREE.CylinderGeometry(0.25 * sc, 0.3 * sc, 4, 8), trunkMat, -1);
+    add(new THREE.SphereGeometry(1.3 * sc, 14, 10), leafMat, 1 + 1.0 * sc);
+    add(new THREE.SphereGeometry(0.8 * sc, 12, 8), leafMat, 1 + 2.3 * sc);
+  } else if (THEME.tree === 'block') {     // 네모 나무
+    add(new THREE.BoxGeometry(0.6 * sc, 4, 0.6 * sc), trunkMat, -1);
+    add(new THREE.BoxGeometry(2.2 * sc, 1.6 * sc, 2.2 * sc), leafMat, 1 + 0.8 * sc);
+    add(new THREE.BoxGeometry(1.3 * sc, 1.1 * sc, 1.3 * sc), leafMat, 1 + 2.15 * sc);
+  } else if (THEME.tree === 'thin') {      // 길쭉한 뿔 나무
+    add(new THREE.ConeGeometry(0.9 * sc, 5.5 * sc, 5), leafMat, -2.5 + 2.75 * sc);
+  } else if (THEME.tree === 'lolli') {     // 막대 사탕
+    add(new THREE.CylinderGeometry(0.1, 0.1, 5, 6), trunkMat, -0.5);
+    add(new THREE.SphereGeometry(1.0 * sc, 16, 12), leafMat, 2 + 0.8 * sc);
+  } else {                                 // 뾰족 나무
+    add(new THREE.CylinderGeometry(0.2 * sc, 0.25 * sc, 4, 6), trunkMat, -1);
+    add(new THREE.ConeGeometry(1.2 * sc, 2.6 * sc, 7), leafMat, 1 + 1.3 * sc);
+  }
+}
+
+// 도착 깃발
+const flag = new THREE.Mesh(new THREE.BoxGeometry(0.15, 5, 0.15), new THREE.MeshLambertMaterial({ color: 0xffffff }));
+flag.position.set(3.3, 2.5, -(total - 6)); scene.add(flag);
+const cloth = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.9, 0.08), new THREE.MeshLambertMaterial({ color: 0xff5a5a }));
+cloth.position.set(2.6, 4.4, -(total - 6)); scene.add(cloth);
+
+// 주인공 (도형)
+const hero = new THREE.Group();
+const SHAPES = {
+  box:  () => new THREE.BoxGeometry(0.9, 0.9, 0.9),
+  ball: () => new THREE.SphereGeometry(0.5, 16, 12),
+  gem:  () => new THREE.DodecahedronGeometry(0.55),
+  can:  () => new THREE.CylinderGeometry(0.48, 0.48, 0.9, 14),
+};
+const heroParts = CHARS.map(c => {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(SHAPES[c.shape](), new THREE.MeshLambertMaterial({ color: c.color }));
+  body.position.y = 0.45; g.add(body);
+  const cap = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.2, 0.7), new THREE.MeshLambertMaterial({ color: c.cap }));
+  cap.position.y = 0.99; g.add(cap);
+  hero.add(g); return g;
+});
+scene.add(hero);
+let charIdx = 0;
+const ch = () => CHARS[charIdx];
+// 모델용 변수 (모델을 못 불러오면 도형 그대로 달림)
+let heroModel = null, heroActs = null, heroAct = null;
+const heroMats = [], mixers = [], HUE = [0, 0.3, 0.55, 0.8];   // 캐릭터별 색 돌리기 값
+
+// 바닥 그림자 (거리감 도우미)
+const shadow = new THREE.Mesh(new THREE.CircleGeometry(0.55, 20),
+  new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.28 }));
+shadow.rotation.x = -Math.PI / 2; scene.add(shadow);
+
+// 상태
+const p = { d: 0, x: 0, lane: 1, y: 0, vy: 0, jumps: 0, onGround: true, squash: 0, big: false, size: 1, inv: 0 };
+let state = 'ready', timer = 0, coinCount = 0, camY = 0, energy = CONFIG.energyMax, safeD = 0, msgT = 0, stars = 0;
+const $coins = document.getElementById('coins'), $prog = document.getElementById('prog'),
+      $msg = document.getElementById('msg'), $fill = document.getElementById('fill'), $pick = document.getElementById('pick');
+// 캐릭터 고르기 버튼 (출발 전 화면에만 보임) — 숫자키 1~4로도 고름
+function setChar(i) {
+  charIdx = i;
+  heroParts.forEach((g, k) => g.visible = !heroModel && k === i);
+  heroMats.forEach(x => { x.m.color.copy(x.c).offsetHSL(HUE[i], 0, 0); x.m.emissive.copy(x.m.color).multiplyScalar(0.28); });
+  [...$pick.children].forEach((b, k) => b.classList.toggle('on', k === i));
+}
+CHARS.forEach((c, i) => {
+  const b = document.createElement('button');
+  b.innerHTML = c.name + '<small>' + c.desc + '</small>';
+  b.addEventListener('pointerdown', e => { e.stopPropagation(); e.preventDefault(); if (state === 'ready') setChar(i); });
+  $pick.appendChild(b);
+});
+setChar(Math.max(0, Math.min(CHARS.length - 1, +QUERY.get('c') || 0)));
+const $themes = document.getElementById('themes');                    // 출발 전 화면 위쪽: 스테이지 고르기
+const stageUrl = n => '?stage=' + n + '&c=' + charIdx + (QUERY.get('models') === '0' ? '&models=0' : '');
+STAGES.forEach((st, i) => {
+  const a = document.createElement('a'); a.textContent = st.name; a.href = '?stage=' + (i + 1);
+  a.addEventListener('click', e => { e.preventDefault(); location.search = stageUrl(i + 1); });
+  if (i + 1 === STAGE_NO) a.className = 'on';
+  $themes.appendChild(a);
+});
+$themes.addEventListener('pointerdown', e => e.stopPropagation());
+function loseEnergy(n) { energy -= n * (ch().hitScale || 1); return energy <= 0; }
+function gameOver() { energy = 0; state = 'over'; timer = 2.2; setMsg('에너지 끝!\n<small>처음부터 다시 달려요</small>'); }
+const startText = '스테이지 ' + STAGE.name + '\n화면을 누르면 출발!\n<small>← → 또는 좌우로 밀기 = 옆 칸 · 누르기 / 스페이스 = 점프\n보라색 적은 밟기 · 초록 물약은 에너지 · 아래에서 캐릭터 고르기</small>';
+function setMsg(t) { $msg.innerHTML = t; }
+const curLane = () => Math.max(0, Math.min(2, Math.round(p.x / LW) + 1));
+const heroH = () => 0.9 * (p.big ? CONFIG.bigScale : 1) + 0.2;
+
+function reset() {                 // 처음부터 다시
+  Object.assign(p, { d: 0, x: 0, lane: 1, y: 0, vy: 0, jumps: 0, onGround: true, squash: 0, big: false, size: 1, inv: 0 });
+  coinCount = 0; camY = 0; energy = CONFIG.energyMax; safeD = 0; msgT = 0; stars = 0;
+  pickups.forEach(k => { k.got = false; k.g.visible = true; });
+  $pick.style.display = 'flex'; $themes.style.display = 'flex';
+  enemies.forEach(e => { e.d = e.d0; e.t = e.t0; e.dir = -1; e.x = (e.lane - 1) * LW; e.dead = false; e.g.visible = true; e.g.scale.set(1, 1, 1); });
+  coins.forEach(c => { c.got = false; c.g.visible = true; });
+  boxes.forEach(b => { b.used = false; b.mesh.material = boxMatNew; });
+  item.active = false; itemMesh.visible = false;
+  state = 'ready'; setMsg(startText);
+}
+function respawn() {               // 근처의 안전한 칸에서 다시
+  let d = Math.max(0, safeD - CONFIG.respawnBack), lane = p.lane;
+  search: for (; d >= 0; d -= 1) for (const l of [p.lane, 1, 0, 2])
+    if (groundLane(d, l) !== null && groundLane(d + 3, l) !== null) { lane = l; break search; }
+  d = Math.max(d, 0);
+  Object.assign(p, { d, lane, x: (lane - 1) * LW, y: groundLane(d, lane) || 0, vy: 0, jumps: 0, onGround: true });
+  safeD = d; state = 'play'; setMsg('');
+}
+function fail() {
+  if (p.big) { p.big = false; state = 'hurt'; timer = 0.9; setMsg('작아졌어요!\n<small>에너지는 그대로</small>'); return; }
+  if (loseEnergy(CONFIG.pitCost)) gameOver();
+  else { state = 'hurt'; timer = 0.9; setMsg('아이쿠!\n<small>에너지가 깎였어요</small>'); }
+}
+function hitEnemy() {              // 적에게 닿음: 멈추지 않고 깜빡이며 계속 달림
+  p.inv = CONFIG.hitSafeTime; msgT = 0.9;
+  if (p.big) { p.big = false; setMsg('작아졌어요!'); return; }
+  if (loseEnergy(CONFIG.enemyCost)) gameOver();
+  else setMsg('아야!\n<small>에너지가 깎였어요</small>');
+}
+function start() { if (state === 'ready') { state = 'play'; setMsg(''); $pick.style.display = 'none'; $themes.style.display = 'none'; return true; } return false; }
+function jump() {
+  if (start() || state !== 'play') return;
+  if (p.jumps < (ch().maxJumps || CONFIG.maxJumps)) {
+    p.vy = CONFIG.jumpPower * (p.jumps === 0 ? 1 : 0.9);
+    p.jumps++; p.onGround = false; p.squash = -0.25;
+  }
+}
+function moveLane(dir) {
+  if (start() || state !== 'play') return;
+  p.lane = Math.max(0, Math.min(2, p.lane + dir));
+}
+addEventListener('keydown', e => {
+  if (e.repeat) return;
+  if (state === 'ready' && /^Digit[1-4]$/.test(e.code)) { setChar(+e.code.slice(5) - 1); return; }
+  if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') { e.preventDefault(); jump(); }
+  else if (e.code === 'ArrowLeft' || e.code === 'KeyA') { e.preventDefault(); moveLane(-1); }
+  else if (e.code === 'ArrowRight' || e.code === 'KeyD') { e.preventDefault(); moveLane(1); }
+});
+// 터치·마우스: 좌우로 밀면 옆 칸, 짧게 누르면 점프
+let touch = null;
+addEventListener('pointerdown', e => { e.preventDefault(); touch = { x: e.clientX, y: e.clientY, used: false }; });
+addEventListener('pointermove', e => {
+  if (!touch) return;
+  const dx = e.clientX - touch.x, dy = e.clientY - touch.y;
+  if (Math.abs(dx) > 28 && Math.abs(dx) > Math.abs(dy)) { moveLane(dx > 0 ? 1 : -1); touch.x = e.clientX; touch.y = e.clientY; touch.used = true; }
+  else if (dy < -40 && !touch.used) { jump(); touch.used = true; }
+});
+addEventListener('pointerup', () => { if (touch && !touch.used) jump(); touch = null; });
+addEventListener('pointercancel', () => { touch = null; });
+
+function update(dt) {
+  if (state === 'hurt') { timer -= dt; if (timer <= 0) respawn(); return; }
+  if (state === 'over') { timer -= dt; if (timer <= 0) reset(); return; }
+  if (state === 'goal') {                                              // 도착: 다음 스테이지로 (마지막이면 1번으로)
+    timer -= dt;
+    if (timer <= 0) { state = 'leaving'; location.search = stageUrl(STAGE_NO < STAGES.length ? STAGE_NO + 1 : 1); }
+    return;
+  }
+  if (state !== 'play') return;
+
+  energy -= CONFIG.drain * (ch().drainScale || 1) * dt;                // 시간이 지나면 에너지가 줄어듦
+  if (energy <= 0) { gameOver(); return; }
+  p.d += CONFIG.speed * dt;
+  const tx = (p.lane - 1) * LW, mx = CONFIG.laneSpeed * dt;
+  p.x += Math.max(-mx, Math.min(mx, tx - p.x));
+  const lane = curLane(), g = groundLane(p.d, lane);
+  if (g !== null && g > p.y + CONFIG.stepUp) { fail(); return; }      // 벽에 부딪힘
+
+  if (p.onGround && g !== null && g >= p.y - 0.6) {
+    p.y = g; p.vy = 0;                                                 // 언덕을 따라 달림
+  } else {
+    p.vy -= (ch().gravity || CONFIG.gravity) * dt;
+    p.y += p.vy * dt;
+    if (g !== null && p.y <= g) {
+      if (p.vy < -4) p.squash = 0.3;                                   // 착지 찌부
+      p.y = g; p.vy = 0; p.onGround = true; p.jumps = 0;
+    } else p.onGround = false;
+  }
+  if (p.onGround) safeD = p.d;
+  if (p.y < -6) { fail(); return; }                                    // 구덩이에 빠짐
+
+  // 상자: 밑에서 머리로 쿵
+  for (const b of boxes) {
+    if (b.lane !== lane || Math.abs(b.d - p.d) > 0.75 || p.vy <= 0) continue;
+    if (p.y + heroH() >= b.bottom && p.y < b.bottom) {
+      p.y = b.bottom - heroH(); p.vy = -3; b.bump = 0.25;
+      if (!b.used) {
+        b.used = true; b.mesh.material = boxMatUsed;
+        Object.assign(item, { active: true, d: b.d, lane: b.lane, y: b.bottom + 1.3, vy: 7, vd: CONFIG.speed + 3 });
+      }
+    }
+  }
+  // 아이템: 앞으로 날아가 떨어진 뒤 천천히 굴러감
+  if (item.active) {
+    item.d += item.vd * dt; item.vy -= CONFIG.gravity * dt; item.y += item.vy * dt;
+    const ig = groundLane(item.d, item.lane);
+    if (ig !== null && item.y <= ig + 0.5 && item.y > ig - 0.8) { item.y = ig + 0.5; item.vy = 0; item.vd = 1.5; }
+    if (item.y < -6 || item.d < p.d - 6) item.active = false;
+    if (Math.abs(item.d - p.d) < 0.9 && item.lane === lane && Math.abs(item.y - (p.y + 0.5)) < 1.3) {
+      item.active = false;
+      if (p.big) coinCount += 5; else { p.big = true; p.squash = -0.4; }
+    }
+  }
+
+  // 적: 위에서 밟으면 처치, 옆에서 닿으면 다침
+  if (p.inv > 0) p.inv -= dt;
+  if (msgT > 0 && (msgT -= dt) <= 0) setMsg('');
+  for (const e of enemies) {
+    if (e.dead) continue;
+    if (Math.abs(e.d - p.d) < 35) {
+      if (e.type === 'W') {
+        const nd = e.d + e.dir * CONFIG.enemySpeed * dt;
+        if (groundLane(nd + e.dir * 0.6, e.lane) === null) e.dir *= -1; else e.d = nd;
+      } else { e.t += dt; e.x = Math.sin(e.t * 1.6) * LW; }
+    }
+    e.y = terrainH(e.d) || 0;
+    if (Math.abs(e.d - p.d) < 1.0 && Math.abs(e.x - p.x) < 1.0) {
+      if (!p.onGround && p.y >= e.y + 0.15 && p.y <= e.y + 1.3) {       // 너그러운 밟기: 공중에서 닿기만 해도 밟힘
+        e.dead = true; e.deadT = 0.3; coinCount += 2;
+        p.vy = CONFIG.jumpPower * CONFIG.stompBounce; p.jumps = 1; p.onGround = false; p.squash = -0.25;
+      } else if (p.y < e.y + 0.8 && p.inv <= 0) { hitEnemy(); if (state !== 'play') return; }
+    }
+  }
+
+  for (const k of pickups) {
+    if (k.got || Math.abs(k.d - p.d) > 0.9 || Math.abs(k.x - p.x) > 1.0 || Math.abs(k.y - (p.y + 0.5)) > 1.2) continue;
+    k.got = true; k.g.visible = false;
+    if (k.kind === 'potion') energy = Math.min(CONFIG.energyMax, energy + CONFIG.potionGain); else stars++;
+  }
+  const mag = ch().magnet || 0.9;                                      // 자석이는 옆 칸 동전도 먹음
+  for (const c of coins) {
+    if (!c.got && Math.abs(c.d - p.d) < (mag > 1 ? 1.4 : 0.8) && Math.abs(c.x - p.x) < mag && Math.abs(c.y - (p.y + 0.5)) < (mag > 1 ? 1.6 : 1.0)) {
+      c.got = true; c.g.visible = false; coinCount++;
+    }
+  }
+  if (p.d >= total - 6) { state = 'goal'; timer = 3; setMsg((STAGE_NO < STAGES.length ? '도착!' : '모든 스테이지 완료!') + '\n<small>동전 ' + coinCount + '개 · 별 동전 ' + '★'.repeat(stars) + '☆'.repeat(BIG_COINS.length - stars)
+      + '\n' + (STAGE_NO < STAGES.length ? '다음: 스테이지 ' + STAGES[STAGE_NO].name : '처음 스테이지로 돌아갑니다') + '</small>'); }
+}
+
+function draw(dt, t) {
+  p.squash += (0 - p.squash) * Math.min(1, dt * 12);
+  p.size += ((p.big ? CONFIG.bigScale : 1) - p.size) * Math.min(1, dt * 10);
+  hero.position.set(p.x, Math.max(p.y, -6), -p.d);
+  hero.scale.set(p.size * (1 + p.squash), p.size * (1 - p.squash), p.size * (1 + p.squash));
+  hero.rotation.x = p.onGround ? 0 : hero.rotation.x - dt * 7 * (p.jumps > 1 ? 1 : 0);
+  hero.rotation.z = ((p.lane - 1) * LW - p.x) * -0.25;                 // 옆으로 갈 때 살짝 기울기
+  hero.visible = (state !== 'hurt' && p.inv <= 0) || Math.floor(t * 12) % 2 === 0;
+  for (const e of enemies) {
+    if (e.dead) { e.deadT -= dt; e.g.scale.set(1.3, 0.2, 1.3); e.g.visible = e.deadT > 0; }
+    e.g.position.set(e.x, e.y + (e.dead ? 0 : Math.abs(Math.sin(t * 6 + e.d0)) * 0.12), -e.d);
+  }
+
+  const g = groundLane(p.d, curLane());
+  shadow.visible = g !== null && p.y >= g - 0.01;
+  if (shadow.visible) {
+    shadow.position.set(p.x, g + 0.08, -p.d);
+    const k = p.size * Math.max(0.45, 1 - (p.y - g) * 0.18); shadow.scale.set(k, k, k);
+  }
+  for (const c of coins) if (c.g.visible) c.g.rotation.y = t * 3 + c.d;
+  for (const mx of mixers) mx.update(dt);
+  if (heroActs) {                                                      // 달리기·점프·대기 동작 바꾸기
+    const want = state === 'ready' ? 'idle' : p.onGround ? 'run' : 'jump';
+    if (heroAct !== want) {
+      heroActs[want].reset().fadeIn(0.12).play();
+      if (heroAct) heroActs[heroAct].fadeOut(0.12);
+      heroAct = want;
+    }
+  }
+  for (const b of boxes) { b.bump = Math.max(0, b.bump - dt); if (b.model) b.model.scale.setScalar(b.used ? 0.75 : 1); b.mesh.position.y = b.bottom + 0.55 + Math.sin(b.bump / 0.25 * Math.PI) * 0.35; }
+  itemMesh.visible = item.active;
+  if (item.active) { itemMesh.position.set((item.lane - 1) * LW, item.y, -item.d); itemMesh.rotation.y = t * 4; }
+
+  camY += (Math.max(p.y, 0) - camY) * Math.min(1, dt * 4);
+  camera.position.set(p.x * 0.5, camY + CONFIG.camUp, -p.d + CONFIG.camBack);
+  camera.lookAt(p.x * 0.3, camY + 1.2, -(p.d + CONFIG.camLookAhead));
+  sun.target.position.set(0, camY, -p.d - 8);                         // 햇빛과 그림자 영역이 캐릭터를 따라감
+  sun.position.set(SUN_POS[0], camY + SUN_POS[1], -p.d - 8 + SUN_POS[2]);
+  if (starsPts) starsPts.position.copy(camera.position);
+  glow.position.set(camera.position.x + GLOW_POS[0], camera.position.y + GLOW_POS[1], camera.position.z - 85);
+
+  for (const k of pickups) if (k.g.visible) k.g.rotation.y = t * 2 + k.d;
+  $coins.textContent = '동전 ' + coinCount + ' ' + '★'.repeat(stars) + '☆'.repeat(BIG_COINS.length - stars);
+  const ratio = Math.max(0, energy) / CONFIG.energyMax;
+  $fill.style.width = (ratio * 100) + '%';
+  $fill.style.background = ratio < 0.25 ? '#ff3b3b' : ratio < 0.5 ? '#ffb03b' : '#4fdc7a';
+  $prog.textContent = Math.min(100, Math.round(p.d / (total - 6) * 100)) + '%';
+  renderer.render(scene, camera);
+}
+
+/* ============================================================
+   4) 모델 입히기 — models 폴더의 파일을 불러와 도형과 바꿔 끼움
+      주소 끝에 ?models=0 을 붙이면 도형 그대로 달림
+      (모델: 쿼터니어스 플랫포머 묶음, 저작권 표시 없이 쓸 수 있는 조건)
+   ============================================================ */
+const MODELS     = { hero: 'character', enemyW: 'enemy_slime', enemyS: 'enemy_crab', coin: 'coin', star: 'star',
+                     potion: 'heart', item: 'fruit', box: 'cube_item', tree: 'tree', cloud: 'cloud' };
+const MODEL_SIZE = { hero: 1.25, enemyW: 0.95, enemyS: 0.95, coin: 0.75, star: 1.4,
+                     potion: 0.8, item: 0.9, box: 1.1, tree: 5.5, cloud: 2.4 };          // 키(높이)
+if (THREE.GLTFLoader && new URLSearchParams(location.search).get('models') !== '0') {
+  const loader = new THREE.GLTFLoader(), fixed = new Set();
+  const load = key => new Promise((res, rej) => loader.load('models/' + MODELS[key] + '.glb', res, undefined, rej));
+  const prep = (root, cast = true) => root.traverse(o => {             // 재질을 게임 조명에 맞게 손봄
+    if (!o.isMesh) return; o.frustumCulled = false; o.castShadow = cast;
+    for (const m of [].concat(o.material)) if (!fixed.has(m)) { fixed.add(m); m.metalness = 0; m.roughness = 0.9; m.color.convertLinearToSRGB(); m.emissive.copy(m.color).multiplyScalar(0.28); }
+  });
+  const fit = (obj, h, center) => {                                    // 키를 맞추고 발바닥(또는 가운데)을 기준점으로
+    const w = new THREE.Group(); w.add(obj); obj.updateMatrixWorld(true);
+    const b = new THREE.Box3().setFromObject(obj), s = b.getSize(new THREE.Vector3()), c = b.getCenter(new THREE.Vector3());
+    const k = h / s.y; obj.scale.multiplyScalar(k);
+    obj.position.set(-c.x * k, (center ? -c.y : -b.min.y) * k, -c.z * k);
+    return w;
+  };
+  const warn = e => console.warn('모델을 못 불러와 도형으로 달립니다', e);
+
+  load('hero').then(g => {
+    prep(g.scene);
+    g.scene.traverse(o => { if (o.isMesh) for (const m of [].concat(o.material)) if (!heroMats.some(x => x.m === m)) heroMats.push({ m, c: m.color.clone() }); });
+    const m = fit(g.scene, MODEL_SIZE.hero); m.rotation.y = Math.PI; hero.add(m); heroModel = m;
+    const mx = new THREE.AnimationMixer(g.scene); mixers.push(mx);
+    const act = n => mx.clipAction(g.animations.find(a => a.name.endsWith('|' + n)));
+    heroActs = { run: act('Run'), jump: act('Jump_Idle'), idle: act('Idle') };
+    setChar(charIdx);
+  }).catch(warn);
+
+  for (const [key, type] of [['enemyW', 'W'], ['enemyS', 'S']]) load(key).then(g => {
+    prep(g.scene);
+    const walk = g.animations.find(a => a.name.endsWith('|Walk'));
+    for (const e of enemies) if (e.type === type) {
+      const c = THREE.SkeletonUtils.clone(g.scene);
+      e.g.children.forEach(k => k.visible = false); e.g.add(fit(c, MODEL_SIZE[key]));
+      const mx = new THREE.AnimationMixer(c); mixers.push(mx); if (walk) mx.clipAction(walk).play();
+    }
+  }).catch(warn);
+
+  const still = (key, use) => load(key).then(g => { prep(g.scene, key === 'tree' || key === 'box'); use(center => fit(g.scene.clone(), MODEL_SIZE[key], center)); }).catch(warn);
+  still('coin', mk => coins.forEach(c => { c.g.children[0].visible = false; c.g.add(mk(true)); }));
+  for (const [key, kind] of [['star', 'star'], ['potion', 'potion']])
+    still(key, mk => pickups.forEach(k => { if (k.kind !== kind) return; k.g.children.forEach(x => x.visible = false); k.g.add(mk(true)); }));
+  still('item', mk => { itemMesh.material.visible = false; itemMesh.add(mk(true)); });
+  still('box', mk => { boxMatNew.visible = boxMatUsed.visible = false; boxes.forEach(b => { b.model = mk(true); b.mesh.add(b.model); }); });
+  still('tree', mk => { treeGroup.visible = false; treeSpots.forEach(t => { const m = mk(); m.scale.setScalar(0.45 + t.sc * 0.2); m.rotation.y = t.x * 3; m.position.set(t.x, t.y - 0.05, t.z); scene.add(m); }); });
+  still('cloud', mk => {
+    if (THEME.cloudTint) mk(true).traverse(k => {    // 구름 재질은 모두 함께 쓰므로 한 번만 물들이면 됨
+      if (k.isMesh) for (const m of [].concat(k.material)) { m.color.set(THEME.cloudTint); m.emissive.copy(m.color).multiplyScalar(0.3); }
+    });
+    const nUp = Math.round(total / 13), nDown = Math.round(total / 3.2);
+    for (let i = 0; i < nUp; i++) {                  // 옆 하늘에 떠 있는 구름
+      const m = mk(true); m.scale.setScalar(1 + (i % 3) * 0.5);
+      m.position.set((i % 2 ? 1 : -1) * (13 + (i * 37 % 17)), 5 + (i * 13 % 8), -(i / nUp) * (total + 30)); scene.add(m);
+    }
+    for (let i = 0; i < nDown; i++) {                // 섬 아래로 깔린 구름 바다 — 높이 떠 있는 느낌
+      const m = mk(true); m.scale.setScalar(2.2 + (i % 4) * 0.9);
+      m.position.set(((i * 53) % 90) - 45, -CONFIG.islandDepth - 4 - (i * 7 % 6), 20 - (i / nDown) * (total + 80)); scene.add(m);
+    }
+  });
+}
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min((now - last) / 1000, 1 / 30); last = now;
+  update(dt); draw(dt, now / 1000);
+  requestAnimationFrame(loop);
+}
+reset(); requestAnimationFrame(loop);
+</script>
+</body>
+</html>
