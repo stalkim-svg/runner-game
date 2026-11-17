@@ -18,13 +18,18 @@
     color:#fff;background:rgba(0,0,0,.28);line-height:1.3}
   #pick button.on{background:#fff;color:#333}
   #pick small{display:block;font-size:11px;font-weight:600}
-  #themes{position:fixed;left:0;right:0;top:54px;display:flex;gap:6px;justify-content:center;flex-wrap:wrap;padding:0 10px}
+  #themes{position:fixed;left:0;right:0;top:50px;display:flex;flex-direction:column;align-items:center;gap:6px;padding:0 10px}
+  #themes div{display:flex;gap:6px;align-items:center}
+  #themes span{min-width:50px;text-align:center;font-weight:800;font-size:14px;color:#fff;background:rgba(0,0,0,.4);border-radius:10px;padding:5px 6px}
+  #themes b{min-width:50px;text-align:center;font-size:20px;color:#333;background:#fff;border-radius:10px;padding:2px 4px}
   #themes a{font-weight:800;font-size:13px;text-decoration:none;color:#fff;border:2px solid #fff;border-radius:12px;
     padding:5px 10px;background:rgba(0,0,0,.28)}
   #themes a.on{background:#fff;color:#333}
+  #snd{position:fixed;right:12px;bottom:10px;font-weight:800;font-size:13px;color:#fff;border:2px solid #fff;border-radius:12px;
+    padding:5px 10px;background:rgba(0,0,0,.28);cursor:pointer}
   #buff{position:fixed;left:0;right:0;top:46px;text-align:center;font-weight:800;font-size:17px;color:#fff3a8;
     text-shadow:0 2px 0 rgba(0,0,0,.4);pointer-events:none}
-  #msg{position:fixed;left:0;right:0;top:30%;text-align:center;font-weight:900;font-size:30px;color:#fff;
+  #msg{position:fixed;left:0;right:0;top:43%;text-align:center;font-weight:900;font-size:30px;color:#fff;
     text-shadow:0 3px 0 rgba(0,0,0,.35);pointer-events:none;white-space:pre-line;line-height:1.5}
   #msg small{font-size:17px;font-weight:700}
 </style>
@@ -34,6 +39,7 @@
 <div id="pick"></div>
 <div id="themes"></div>
 <div id="buff"></div>
+<div id="snd"></div>
 <div id="msg"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
@@ -52,6 +58,7 @@ const CONFIG = {
   pitCost: 20,       // 구덩이에 빠지면 깎이는 에너지
   enemyCost: 15,     // 적에게 닿으면 깎이는 에너지
   potionGain: 25,    // 물약 하나가 채워주는 에너지
+  stompGain: 6,      // 악당을 밟으면 차는 에너지 (큰 악당은 더 많이)
   respawnBack: 8,    // 실패하면 몇 미터 뒤에서 다시 시작
   laneWidth: 2,      // 한 칸 너비
   laneSpeed: 14,     // 옆 칸으로 옮겨가는 빠르기
@@ -92,12 +99,24 @@ const BOXES = [[26,1],[84,1],[168,1]];
 const POTIONS = [[38,1],[70,2],[110,0],[150,1]];
 // 별 동전(스테이지에 3개, 먹기 어려운 자리): [거리, 칸 번호, 땅에서 높이]
 const BIG_COINS = [[44,2,0.9],[78.5,2,3.4],[160,0,0.9]];
+// 동전 아치(점프해서 먹는 포물선): [가운데 거리, 반쪽 너비, 높이]
+const COIN_ARCS = [];
+// 담·허들(칸을 막는 블록. 점프해서 올라타거나 옆 칸으로 피함): [시작 거리, 길이, 칸, 높이]
+const BLOCKS = [];
+// 구간 표시: [시작 거리, 구간 종류]  terrain 지형 · enemy 악당 · mix 섞임 · rest 쉬기
+const ZONES = [];
 // 캐릭터: 적지 않은 값은 설정표 값을 그대로 씀
+//   size 몸 크기 · wide/tall 옆·위 비율 · anim 발놀림 빠르기 · bob 달릴 때 통통 튀는 높이
+//   jumpPower 점프 힘 · gravity 떨어지는 빠르기 · laneSpeed 옆 칸 이동 빠르기 · prop 달고 다니는 소품
 const CHARS = [
-  { name: '통통이', desc: '기본 · 2단 점프',          color: 0xff5a4d, cap: 0x3d6bff, shape: 'box' },
-  { name: '풍선이', desc: '3단 점프 · 천천히 낙하',   color: 0x4db8ff, cap: 0xffffff, shape: 'ball', maxJumps: 3, gravity: 25 },
-  { name: '자석이', desc: '옆 칸 동전도 끌어옴',      color: 0xffc83c, cap: 0xd23c3c, shape: 'gem',  magnet: 2.6 },
-  { name: '튼튼이', desc: '에너지가 천천히 줄어듦',   color: 0x4fcf70, cap: 0x2a6b3c, shape: 'can',  drainScale: 0.6, hitScale: 0.6 },
+  { name: '통통이', desc: '동글동글 · 통통 튀는 기본형',     color: 0xff5a4d, cap: 0x3d6bff, shape: 'box',
+    size: 1.0,  wide: 1.15, tall: 0.95, anim: 1.0,  bob: 0.16 },
+  { name: '풍선이', desc: '길쭉 · 3단 점프로 둥실둥실',     color: 0x4db8ff, cap: 0xffffff, shape: 'ball',
+    size: 0.95, wide: 0.82, tall: 1.2,  anim: 0.8,  bob: 0.05, maxJumps: 3, gravity: 22, jumpPower: 10.5, laneSpeed: 11, prop: 'balloon' },
+  { name: '자석이', desc: '작고 날쌤 · 옆 칸 동전도 끌어옴', color: 0xffc83c, cap: 0xd23c3c, shape: 'gem',
+    size: 0.8,  wide: 1,    tall: 1,    anim: 1.5,  bob: 0.04, magnet: 2.6, jumpPower: 11, laneSpeed: 22, prop: 'magnet' },
+  { name: '튼튼이', desc: '크고 묵직 · 에너지가 오래감',     color: 0x4fcf70, cap: 0x2a6b3c, shape: 'can',
+    size: 1.3,  wide: 1.12, tall: 1,    anim: 0.75, bob: 0.02, drainScale: 0.6, hitScale: 0.6, gravity: 38, jumpPower: 12.2, laneSpeed: 10, prop: 'helmet' },
 ];
 // 비주얼 테마: 주소 끝에 ?theme=이름 을 붙이거나 출발 전 화면 위쪽 버튼으로 바꿈
 const THEMES = {
@@ -125,78 +144,146 @@ THEMES.night = { ...THEMES.toy, name: '별밤',
   glowColor: 0xe6eeff, glowPos: [20, 14], glowSize: 24, cloudTint: 0x8e9ad8, stars: true };
 
 /* ------------------------------------------------------------
-   스테이지 목록 — 스테이지마다 시간대(테마)가 다름
-   1번은 위의 배치표(손으로 만든 것), 2·3번은 자동 생성(씨앗 숫자를 바꾸면 다른 지형)
-   주소 끝에 ?stage=2 처럼 붙이거나 출발 전 화면 위쪽 버튼으로 고름
+   난이도 — 시작 화면에서 지형·악당·아이템 레벨을 1~100으로 고르고 출발
+   (난이도를 정해 보는 시험 도구. 고른 숫자는 한 판 내내 그대로 적용됨)
+   주소로도 지정: ?t=60&e=25&i=40&time=night   (t 지형 · e 악당 · i 아이템 · time 시간대)
    ------------------------------------------------------------ */
-const STAGES = [
-  // lv = 레벨(1~3).  terrain 지형 · enemy 악당 · box 아이템 상자
-  { name: '1 낮의 섬',   theme: 'toy',               lv: { terrain: 1, enemy: 1, box: 1 }, gen: { seed: 3,  length: 555, append: true } },  // 손으로 만든 앞부분 뒤에 이어 붙임
-  { name: '2 노을 섬',   theme: 'magic', speed: 8,   lv: { terrain: 2, enemy: 2, box: 2 }, gen: { seed: 7,  length: 600 } },
-  { name: '3 별밤 섬',   theme: 'night', speed: 8.5, lv: { terrain: 3, enemy: 3, box: 3 }, gen: { seed: 21, length: 650 } },
-];
-/* 레벨이 뜻하는 것
-   지형   1: 낮은 언덕, 짧은 구멍, 한 칸 구덩이 위주
-          2: 언덕이 높아지고 구멍·구덩이가 길어짐, 두 칸 구덩이가 늘어남
-          3: 큰 언덕, 긴 구멍, 구덩이마다 칸을 바꿔야 하는 지그재그
-   악당   1: 걸어오는 슬라임(W), 좌우로 오가는 게(S)
-          2: + 머리 높이로 나는 벌(F) — 점프하면 부딪히고 그냥 달리면 지나감. 전체적으로 빨라짐
-          3: + 가까이 가면 돌진하는 해골(C), 벌이 옆 칸에 같이 나옴
-   상자   아래 표에서 무엇이 나올지 정함 (여러 번 적으면 그만큼 자주 나옴) */
-const BOX_LOOT = {
-  1: ['grow', 'grow', 'coins', 'heart'],
-  2: ['grow', 'coins', 'heart', 'magnet', 'magnet'],
-  3: ['grow', 'heart', 'coins', 'magnet', 'dash', 'dash'],
-};
-// 아이템: grow 커지기 · heart 에너지 +40 · coins 동전 +10 · magnet 자석 8초 · dash 번개 질주 4.5초(무적, 구덩이 위를 달림)
+const LV_MAX = 100;
+/* 레벨 숫자가 뜻하는 것 (1 → 100으로 갈수록)
+   지형    큰 언덕·봉우리·물결이 섞여 나오고 높아짐(5→10미터), 구멍이 잦고 길어지고(3→8미터), 두 칸 구덩이와
+           칸 바꾸기가 늘고, 물약이 드물어지고,
+           10부터 점프해야 오르는 턱·절벽·담 · 20부터 허들 · 45부터 2단 점프 턱, 달리는 속도가 빨라짐(8→13).  25부터 징검다리(구멍-발판-구멍)
+   악당    걸어오는 속도와 좌우로 오가는 속도가 빨라지고, 토막 끝의 덤 악당이 늘어남(30%→95%)
+           1부터 슬라임·게 · 25부터 나는 벌 · 45부터 돌진하는 해골 · 65부터 벌이 옆 칸에 같이 나옴
+   아이템  아래 표의 숫자 = 그 아이템이 상자에서 나오기 시작하는 레벨. 레벨이 오를수록 자석·번개가 오래감 */
+const ITEM_UNLOCK = { grow: 1, coins: 1, heart: 11, magnet: 31, dash: 51 };
+// 아이템: grow 커지기 · coins 동전 +10 · heart 에너지 +30 · magnet 자석 · dash 번개 질주(악당을 날리고 구덩이 위를 달림)
+const TIMES = { day: ['낮', 'toy'], sunset: ['노을', 'magic'], night: ['별밤', 'night'] };   // 시간대: [이름, 테마]
 const QUERY = new URLSearchParams(location.search);
-const STAGE_NO = Math.max(1, Math.min(STAGES.length, +QUERY.get('stage') || 1)), STAGE = STAGES[STAGE_NO - 1], LV = STAGE.lv;
+// 스테이지: 지형·악당·아이템을 모두 그 레벨로 맞춘 판. 도착하면 다음 스테이지로 넘어감
+const STAGES = [
+  { name: '1 낮의 섬', lv: 20,  time: 'day' },
+  { name: '2 노을 섬', lv: 60,  time: 'sunset' },
+  { name: '3 별밤 섬', lv: 100, time: 'night' },
+];
+// 주소에 t·e·i 가 있으면 '직접 조절'(시험용), 없으면 스테이지 (?stage=2)
+const CUSTOM = ['t', 'e', 'i'].some(q => QUERY.get(q));
+const STAGE_NO = CUSTOM ? 0 : Math.max(1, Math.min(STAGES.length, Math.floor(+QUERY.get('stage')) || 1));
+const lvOf = q => STAGE_NO ? STAGES[STAGE_NO - 1].lv : Math.max(1, Math.min(LV_MAX, Math.round(+QUERY.get(q)) || 1));
+const LV = { terrain: lvOf('t'), enemy: lvOf('e'), item: lvOf('i') };
+const TIME = STAGE_NO ? STAGES[STAGE_NO - 1].time : TIMES[QUERY.get('time')] ? QUERY.get('time') : 'day';
+const U = { terrain: (LV.terrain - 1) / (LV_MAX - 1), enemy: (LV.enemy - 1) / (LV_MAX - 1), item: (LV.item - 1) / (LV_MAX - 1) };   // 레벨을 0~1로 바꾼 값
+// 레벨이 오르면 세지는 배율: 에너지가 줄어드는 빠르기(1→1.5배) · 악당에게 맞는 피해(1→1.8배) · 구덩이에 빠지는 피해(1→1.8배)
+const HARD = { drain: 1 + (U.terrain + U.enemy) / 4, enemyHit: 1 + U.enemy * 0.8, pitHit: 1 + U.terrain * 0.8 };
+const STAGE = { theme: TIMES[TIME][1], speed: 8 + 5 * U.terrain,
+  gen: { seed: LV.terrain * 131 + LV.enemy * 17 + LV.item * 7 + 1, length: 450, append: false } };   // length = 한 판의 길이(미터)
 const THEME = THEMES[QUERY.get('theme')] || THEMES[STAGE.theme];
 // 적: [거리, 칸 번호, 종류]  W=내 쪽으로 걸어옴  S=좌우 3칸을 오감(칸 번호는 무시)
 const ENEMIES = [[14,1,'W'],[42,1,'W'],[56,0,'W'],[75,2,'W'],[96,1,'S'],[108,0,'W'],[127,1,'S'],[145,1,'W'],[174,1,'S']];
 
-// 스테이지 자동 생성기 — 안전한 칸(동전 길)을 먼저 정하고 그 주변에 구덩이·적·상자를 놓아서 항상 깰 수 있게 만듦
-function genStage({ seed, length }, lv, from) {       // from = 이어 붙일 때 시작 거리
-  const T = lv.terrain, E = lv.enemy;
+// 스테이지 자동 생성기 — 안전한 칸(동전 길)을 먼저 정하고 그 주변에 구덩이·악당·상자를 놓아서 항상 깰 수 있게 만듦
+function genStage({ seed, length }, from) {            // from = 이어 붙일 때 시작 거리
+  const t = U.terrain, e = U.enemy, E = LV.enemy, maxH = 5 + 5 * t, sp = STAGE.speed;
   let s = seed;
-  const r = () => { s = s + 0x6D2B79F5 | 0; let t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  const r = () => { s = s + 0x6D2B79F5 | 0; let x = Math.imul(s ^ s >>> 15, 1 | s); x = x + Math.imul(x ^ x >>> 7, 61 | x) ^ x; return ((x ^ x >>> 14) >>> 0) / 4294967296; };
   const pick = a => a[Math.floor(r() * a.length)];
-  const level = from ? [] : [[16, 0]], pits = [], coinPath = from ? [] : [[4, 1]], boxes = [], potions = [], big = [], enemies = [];
-  let d = from || 16, h = 0, lane = 1, sinceGap = 0, n = 0, lastPot = from || 0;
+  const level = from ? [] : [[14, 0]], pits = [], coinPath = from ? [] : [[4, 1]], boxes = [], potions = [], big = [], enemies = [], arcs = [], blocks = [], zones = [];
+  let zone = 'rest', zLeft = 1;
+  const addEnemy = (ed, el, type) => {                               // 악당끼리 겹치지 않게: 같은 칸 4미터, 다른 칸 2미터 안에는 안 놓음
+    if (enemies.some(q => Math.abs(q[0] - ed) < (q[1] === el || type === 'S' || q[2] === 'S' ? 4 : 2))) return false;
+    enemies.push([ed, el, type]); return true;
+  };
+  let d = from || 14, h = 0, lane = 1, sinceGap = 0, n = 0, lastPot = from || 0, endIdx = -1, afterBox = false, lastBox = from || 0;
+  const enemyType = () => { const ty = ['W', 'W', 'S']; if (E >= 25) ty.push('F', 'F'); if (E >= 45) ty.push('C', 'C'); return pick(ty); };
   while (d < length - 24) {
     n++;
-    if (r() < 0.06 + T * 0.06 && sinceGap > 20) {                               // 3칸 전체 구멍 + 착지할 평지
-      const gl = 3 + Math.floor(r() * T);                            // 지형 1: 3미터 · 2: 3~4 · 3: 3~5
-      level.push([gl, null], [8, h]); d += gl + 8; sinceGap = 0; continue;
+    if (zLeft-- <= 0) {                                              // 구간 바꾸기: 지형 구간 / 악당 구간 / 섞인 구간 / 쉬는 구간
+      zone = pick(['terrain', 'enemy', 'mix', 'rest'].filter(z => z !== zone && !(z === 'rest' && n < 6)));
+      zLeft = zone === 'rest' ? 1 : 3 + Math.floor(r() * 2);
+      zones.push([d, zone]);
     }
-    const len = 13 - T + Math.floor(r() * (5 - T)), a = d;                     // 땅 한 토막 (가끔 언덕)
-    if (r() < 0.25 + T * 0.12) h = Math.max(0, Math.min(2 + T * 2, h + pick([-1, 1]) * pick([1.5, 2, 1 + T])));
-    level.push([len, h]); d += len; sinceGap += len;
-    const kind = r();
-    if (kind < 0.42) {                                               // 칸 구덩이: 안전한 칸은 남김
-      const nl = Math.max(0, Math.min(2, lane + (r() < 0.2 + T * 0.2 ? pick([-1, 1]) : 0)));   // 레벨이 높을수록 칸을 자주 바꿔야 함
+    const ZT = zone === 'terrain', ZE = zone === 'enemy', ZR = zone === 'rest', calm = ZE || ZR;
+    const zm = ZT ? 0.15 : ZE ? 1.4 : ZR ? 0 : 1;                    // 구간별 덤 악당 배율
+    if (!calm && r() < (0.12 + 0.16 * t) * (ZT ? 2 : 1) && sinceGap > (ZT ? 9 : 16)) {                    // 3칸 전체 구멍 (+ 착지할 땅)
+      if (endIdx >= 0) enemies.splice(endIdx, 1);                    // 구멍 바로 앞의 덤 악당은 빼서 점프할 자리를 남김
+      endIdx = -1; afterBox = false;
+      if (LV.terrain >= 25 && r() < 0.25 + 0.35 * t) { const gs = Math.max(3, Math.round(sp * 0.3)), pf = Math.max(5, Math.round(sp * 0.55)); level.push([gs, null], [pf, h], [gs, null], [7, h]); d += gs * 2 + pf + 7; }   // 징검다리
+      else { const gl = Math.max(3, Math.round(sp * (0.32 + 0.3 * t * r()))); level.push([gl, null], [7, h]); d += gl + 7; }   // 구멍 길이는 속도에 맞춰 길어짐(3→8미터)
+      sinceGap = 0; continue;
+    }
+    let prevEnd = endIdx, isBox = false; endIdx = -1;
+    const len = Math.round(11 + 3 * t) + Math.floor(r() * 3), a = d;
+    const pStep = calm || LV.terrain < 10 ? 0 : Math.min(0.75, (0.12 + 0.3 * t) * (ZT ? 2.2 : 1)), roll = r();
+    const shape = calm ? 0.7 + roll * 0.3 : (roll - pStep) / (1 - pStep);   // 땅 모양 고르기 (악당·쉬는 구간은 잔잔한 물결만)
+    if (roll < pStep) {                                              // 턱·절벽: 높이가 뚝 끊김. 올라갈 땐 점프해야 함 (지형 10부터)
+      const down = h >= 2 && (h >= maxH || r() < 0.4);
+      const high = LV.terrain >= 45 && r() < 0.1 + 0.4 * t;          // 2단 점프가 필요한 높은 턱 (지형 45부터)
+      h = down ? Math.max(0, h - (2 + r() * 3)) : h + (high ? 2.2 + r() * 0.4 : 1.2 + r() * 0.4);
+      level.push([len, h, 1]);
+      if (!down) { if (prevEnd >= 0) { enemies.splice(prevEnd, 1); prevEnd = -1; } arcs.push(high ? [a - 3, 4.5, 2.3] : [a - 0.5, 2.6, 1.1]); }   // 턱 앞은 비우고 동전 아치로 점프 자리를 알림 (높은 턱은 일찍, 높게)
+    } else if (shape < 0.3 + 0.2 * t) {                                // 그 밖: 큰 언덕 / 봉우리·골짜기 / 물결 / 평지(아주 드물게)
+      h = Math.max(0, Math.min(maxH, h + pick([-1, 1]) * pick([2, 2.5, 2.5 + 1.5 * t])));
+      level.push([len, h]);
+    } else if (shape < 0.62 + 0.1 * t) {
+      const bump = Math.min(pick([1.8, 2.2, 2 + 1.5 * t]), len * 0.2) * (h >= 2.6 && r() < 0.4 ? -1 : 1);
+      level.push([len / 2, h + bump], [len / 2, h]);
+    } else if (shape < 0.95) {
+      const w = Math.min(0.8 + 0.6 * t + r() * 0.4, len * 0.1);
+      level.push([len / 4, h + w], [len / 4, h], [len / 4, h + w], [len / 4, h]);
+    } else level.push([len, h]);
+    d += len; sinceGap += len;
+    const others = () => [0, 1, 2].filter(x => x !== lane), names = ls => ls.map(x => 'LCR'[x]).join('');
+    const kr = r(), kind = ZT ? kr * 0.56 : ZE ? 0.40 + kr * 0.4 : ZR ? (kr < 0.5 ? 0.83 : 0.99) : kr;   // 구간에 따라 무엇이 나올지 치우침
+    let bee = false, main = false, hurdle = false;
+    if (kind < 0.30) {                                               // 칸 구덩이: 안전한 칸은 남김
+      const nl = Math.max(0, Math.min(2, lane + (r() < 0.45 + 0.45 * t ? pick([-1, 1]) : 0)));
       if (nl !== lane) { coinPath.push([a + 4, nl]); lane = nl; }
-      const others = [0, 1, 2].filter(x => x !== lane);
-      const ls = r() < T * 0.23 ? others : [pick(others)];
-      pits.push([a + 5, 4 + (T > 1 && r() < 0.5 ? 1 : 0), ls.map(x => 'LCR'[x]).join('')]);
-    } else if (kind < 0.60 + E * 0.05) {                             // 악당: 레벨이 오르면 종류가 늘어남
-      const type = pick(E === 1 ? ['W', 'W', 'S'] : E === 2 ? ['W', 'S', 'F', 'F'] : ['W', 'S', 'F', 'C', 'C']);
-      enemies.push([a + (type === 'C' ? 9 : 7), type === 'S' ? 1 : lane, type]);
-      if (E > 2 && type !== 'S' && r() < 0.4) enemies.push([a + 7, pick([0, 1, 2].filter(x => x !== lane)), 'F']);
-    } else if (kind < 0.72 + E * 0.05) boxes.push([a + 1.5, lane]);
-    if (a - lastPot > 46 + T * 9) { potions.push([a + len - 1.5, lane]); lastPot = a; }   // 물약 간격: 레벨이 높을수록 멀어짐
-    if (!from && n % 8 === 3 && big.length < 3) big.push([a + 2.5, pick([0, 1, 2].filter(x => x !== lane)), 0.9]);
+      const pl = Math.min(len - 6, 4 + Math.floor(r() * (1 + 4 * t))), pn = names(r() < 0.3 + 0.55 * t ? others() : [pick(others())]);
+      if (LV.terrain >= 10 && r() < 0.3 + 0.2 * t) blocks.push([a + 5, pl, pn, LV.terrain >= 40 && r() < 0.5 * t ? 2.6 : 1.3]);   // 구덩이 대신 담: 낮은 담은 올라탈 수 있음 (지형 10부터)
+      else pits.push([a + 5, pl, pn]);
+    } else if (kind < 0.40) {                                        // 외나무다리: 양옆 두 칸이 길게 뚫림
+      pits.push([a + 4, len - 6, names(others())]);
+    } else {
+      if (r() < 0.7) {                                               // 동전 길이 옆 칸으로 꺾임 (일직선 방지)
+        const nl = lane === 1 ? pick([0, 2]) : 1;
+        coinPath.push([a + 4, nl]); lane = nl;
+      }
+      const needBox = a - lastBox > 100;                             // 상자가 100미터 넘게 없었으면 이번엔 꼭 상자
+      if (!needBox && !ZT && !ZR && kind < 0.72 + 0.12 * e) {                      // 악당: 레벨이 오르면 종류가 늘어남
+        const type = enemyType(); bee = type === 'F';
+        main = addEnemy(afterBox ? a + len - 2.5 : a + (type === 'C' ? 9 : 7), type === 'S' ? 1 : lane, type);   // 상자 다음 토막에서는 뒤쪽으로 미룸
+        if (E >= 65 && type !== 'S' && r() < 0.5) addEnemy(a + 9.5, pick(others()), 'F');
+      } else if (needBox || kind < 0.84 + 0.1 * e) {                 // 아이템 상자: 치고, 아이템을 먹을 때까지 주변을 비워 둠
+        boxes.push([a + 1.5, lane]); isBox = true; lastBox = a;
+        if (prevEnd >= 0) enemies.splice(prevEnd, 1);                // 바로 앞 토막 끝의 덤 악당을 뺌
+      }
+    }
+    if (kind >= 0.40 && !isBox && !afterBox && (!main || len >= 14) && LV.terrain >= 20 && r() < (0.12 + 0.33 * t) * (ZT ? 2.2 : calm ? 0 : 1)) {   // 허들: 안전한 칸을 막은 낮은 담. 점프로 넘음 (지형 20부터)
+      blocks.push([a + len - 3.5, 2, 'LCR'[lane], 1.2]); hurdle = true;
+      if (!bee) arcs.push([a + len - 2.5, 2.4, 1.2]);
+    }
+    if (!isBox && !afterBox && !hurdle && r() < (0.3 + 0.65 * e) * zm) {                                      // 덤 악당: 토막 끝, 안전한 칸에 하나 더
+      const type = E >= 25 && r() < 0.4 ? 'F' : 'W'; bee = bee || type === 'F';
+      if (addEnemy(a + len - 2.5, lane, type)) endIdx = enemies.length - 1;
+    }
+    if (ZE && !isBox && !afterBox && r() < 0.5 + 0.4 * e) addEnemy(a + 3.5, pick(others()), 'W');   // 악당 구간: 토막 앞쪽 옆 칸에 하나 더
+    if (kind >= 0.40 && !isBox && !afterBox && r() < 0.6 * e * zm) { // 둘째 덤 악당: 토막 가운데, 옆 칸에
+      const type = E >= 25 && r() < 0.5 ? 'F' : 'W'; bee = bee || type === 'F';
+      addEnemy(a + len / 2 + 1, pick(others()), type);
+    }
+    if (!bee && r() < 0.5) arcs.push([a + 2.5 + r() * 2, 2.5, 1.5 + r() * 0.9]);   // 동전 아치: 점프해서 먹는 포물선
+    if (a - lastPot > 48 + 42 * t) { potions.push([a + len - 1.5, lane]); lastPot = a; }   // 물약 간격: 레벨이 높을수록 멀어짐
+    if (!from && n % 8 === 3 && big.length < 3) big.push([a + 2.5, pick(others()), 0.9]);
+    afterBox = isBox;
   }
   level.push([24, 0]);
-  return { level, pits, coinPath, boxes, potions, big, enemies };
+  return { level, pits, coinPath, boxes, potions, big, enemies, arcs, blocks, zones };
 }
-if (STAGE.gen) {                                                     // 1번은 배치표 뒤에 이어 붙이고, 2·3번은 통째로 갈아 끼움
-  const from = STAGE.gen.append ? LEVEL.reduce((a, x) => a + x[0], 0) : 0;
-  const g = genStage(STAGE.gen, LV, from), fill = (arr, v) => { if (!from) arr.length = 0; arr.push(...v); };
+{ const from = STAGE.gen.append ? LEVEL.reduce((a, x) => a + x[0], 0) : 0;   // 위의 손으로 만든 배치표를 생성 결과로 갈아 끼움 (append 를 true 로 하면 그 뒤에 이어 붙임)
+  const g = genStage(STAGE.gen, from), fill = (arr, v) => { if (!from) arr.length = 0; arr.push(...v); };
   fill(LEVEL, g.level); fill(PITS, g.pits); fill(COIN_PATH, g.coinPath); fill(BOXES, g.boxes);
-  fill(POTIONS, g.potions); fill(BIG_COINS, g.big); fill(ENEMIES, g.enemies);
-}
-if (STAGE.speed) CONFIG.speed = STAGE.speed;
+  fill(POTIONS, g.potions); fill(BIG_COINS, g.big); fill(ENEMIES, g.enemies); fill(COIN_ARCS, g.arcs); fill(BLOCKS, g.blocks); fill(ZONES, g.zones); }
+CONFIG.speed = STAGE.speed;
 
 /* ============================================================
    3) 게임 본체
@@ -204,9 +291,9 @@ if (STAGE.speed) CONFIG.speed = STAGE.speed;
 const LW = CONFIG.laneWidth;
 const segs = []; let total = 0;
 { let h = 0;
-  for (const [len, to] of LEVEL) {
+  for (const [len, to, step] of LEVEL) {              // step 이 있으면 경사 없이 높이가 뚝 바뀜(턱·절벽)
     if (to === null) segs.push({ start: total, end: total + len, len, gap: true, h0: h, h1: h });
-    else { segs.push({ start: total, end: total + len, len, gap: false, h0: h, h1: to }); h = to; }
+    else { segs.push({ start: total, end: total + len, len, gap: false, h0: step ? to : h, h1: to }); h = to; }
     total += len;
   } }
 const pits = PITS.map(([s, len, ls]) => ({ start: s, end: s + len, lanes: [...ls].map(c => 'LCR'.indexOf(c)) }));
@@ -215,9 +302,11 @@ function segAt(d) { for (const s of segs) if (d >= s.start && d < s.end) return 
 function terrainH(d) {             // 구덩이 무시한 땅 높이 (전체 구멍이면 null)
   const s = segAt(Math.max(d, 0)); return !s || s.gap ? null : hAt(s, Math.max(d, 0));
 }
+const blocks = BLOCKS.map(([s, len, ls, up]) => ({ start: s, end: s + len, up, lanes: [...ls].map(c => 'LCR'.indexOf(c)) }));
+function blockUp(d, lane) { for (const b of blocks) if (d >= b.start && d < b.end && b.lanes.includes(lane)) return b.up; return 0; }
 function inPit(d, lane) { return pits.some(q => d >= q.start && d < q.end && q.lanes.includes(lane)); }
 function groundLane(d, lane) {     // 그 칸의 땅 높이 (구덩이·구멍이면 null)
-  const h = terrainH(d); return h === null || inPit(d, lane) ? null : h;
+  const h = terrainH(d); return h === null || inPit(d, lane) ? null : h + blockUp(d, lane);
 }
 function coinLane(d) {             // 동전 길의 좌우 위치 (칸 사이를 비스듬히 넘어감)
   let i = 0; while (i + 1 < COIN_PATH.length && COIN_PATH[i + 1][0] - 4 <= d) i++;
@@ -314,6 +403,20 @@ for (let lane = 0; lane < 3; lane++) {
     }
   }
 }
+// 담·허들 블록
+const blockTop = [], blockSide = [];
+for (const b of blocks) for (const lane of b.lanes) {
+  const x0 = (lane - 1) * LW - LW / 2 + 0.06, x1 = x0 + LW - 0.12, th = d => terrainH(Math.min(d, b.end - 0.01)) || 0;
+  for (let d = b.start; d < b.end - 0.001; d += 1) {
+    const e = Math.min(b.end, d + 1), ya = th(d), yb = th(e);
+    quad(blockTop, [x0, ya + b.up, -d], [x1, ya + b.up, -d], [x1, yb + b.up, -e], [x0, yb + b.up, -e]);
+    quad(blockSide, [x0, ya - 0.3, -d], [x0, ya + b.up, -d], [x0, yb + b.up, -e], [x0, yb - 0.3, -e]);
+    quad(blockSide, [x1, ya - 0.3, -d], [x1, yb - 0.3, -e], [x1, yb + b.up, -e], [x1, ya + b.up, -d]);
+  }
+  const y0 = th(b.start), y1 = th(b.end);
+  quad(blockSide, [x0, y0 - 0.3, -b.start], [x1, y0 - 0.3, -b.start], [x1, y0 + b.up, -b.start], [x0, y0 + b.up, -b.start]);
+  quad(blockSide, [x0, y1 - 0.3, -b.end], [x0, y1 + b.up, -b.end], [x1, y1 + b.up, -b.end], [x1, y1 - 0.3, -b.end]);
+}
 // 양옆 땅 — 달리는 3칸에 붙어 같은 높이로 이어지는, 나무 심는 자리 (달릴 수는 없음)
 for (const s of segs) {
   if (s.gap) continue;
@@ -331,6 +434,7 @@ for (const s of segs) {
   }
 }
 function addMesh(arr, color, top) {                 // top = 윗면(그림자를 받음)
+  if (!arr.length) return;
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
   g.computeVertexNormals();
@@ -339,6 +443,7 @@ function addMesh(arr, color, top) {                 // top = 윗면(그림자를
 }
 const darker = (c, k) => new THREE.Color(c).multiplyScalar(k);
 addMesh(grassA, THEME.grassA, true); addMesh(grassB, THEME.grassB, true); addMesh(dirt, THEME.dirt);
+addMesh(blockTop, 0xf6e3b4, true); addMesh(blockSide, 0xc99a5b);
 addMesh(sideA, darker(THEME.grassB, 0.78), true); addMesh(sideB, darker(THEME.grassB, 0.7), true);
 
 // 동전 — 동전 길을 따라 자동으로 놓음
@@ -347,11 +452,12 @@ const coinGeo = new THREE.CylinderGeometry(0.38, 0.38, 0.1, 18);
 const coinMat = new THREE.MeshLambertMaterial({ color: THEME.coin, emissive: 0x7a5a00 });
 for (let d = COIN_PATH[0][0]; d < total - 8; d += 2) {
   const s = segAt(d), x = (coinLane(d) - 1) * LW;
-  let y = (s.gap ? s.h0 : hAt(s, d)) + 0.9;
+  let y = (s.gap ? s.h0 : hAt(s, d)) + 0.9 + blockUp(d, Math.round(coinLane(d)));
   for (const q of segs) if (q.gap) {                 // 구멍 위에서는 포물선으로 떠서 "여기서 점프"를 알려줌
     const k = (d - (q.start + q.end) / 2) / (q.len / 2 + 2.5);
     if (Math.abs(k) < 1) y += 1.3 * (1 - k * k);
   }
+  for (const [c, w, up] of COIN_ARCS) { const k = (d - c) / w; if (Math.abs(k) < 1) y += up * (1 - k * k); }
   const m = new THREE.Mesh(coinGeo, coinMat); m.rotation.z = Math.PI / 2;
   const g = new THREE.Group(); g.add(m); g.position.set(x, y, -d); scene.add(g);
   coins.push({ d, x, y, g, got: false });
@@ -411,7 +517,10 @@ const enemies = ENEMIES.map(([d, lane, type], i) => {
     eye.position.set(sx, 0.55, 0.42); g.add(eye);
   }
   scene.add(g);
-  return { d0: d, d, lane, type, t0: i * 1.3, t: i * 1.3, dir: -1, x: (lane - 1) * LW, y: 0, dead: false, deadT: 0, g };
+  const rnd = Math.abs(Math.sin(d * 12.9898 + i * 4.1) * 43758.5453) % 1;
+  const sc = 0.75 + rnd * 0.8, sf = 1.5 - (sc - 0.75) * 0.9;           // 악당마다 크기(0.75~1.55배)가 다르고, 작을수록 빠름(1.5~0.8배)
+  g.scale.setScalar(sc);
+  return { d0: d, d, lane, type, sc, sf, t0: i * 1.3, t: i * 1.3, dir: -1, x: (lane - 1) * LW, y: 0, dead: false, deadT: 0, g };
 });
 
 // 길 옆 나무 (속도감용)
@@ -473,8 +582,17 @@ const heroParts = CHARS.map(c => {
 scene.add(hero);
 let charIdx = 0;
 const ch = () => CHARS[charIdx];
+// 캐릭터별 소품 (풍선·자석·투구)
+const heroProps = CHARS.map(c => {
+  const g = new THREE.Group();
+  const M = (geo, color, x, y, z) => { const m = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color })); m.position.set(x, y, z); m.castShadow = true; g.add(m); return m; };
+  if (c.prop === 'balloon') { M(new THREE.SphereGeometry(0.42, 14, 10), 0xff5a7a, 0.3, 2.4, 0.15); M(new THREE.CylinderGeometry(0.015, 0.015, 1.1, 4), 0xffffff, 0.3, 1.5, 0.15); }
+  if (c.prop === 'magnet') M(new THREE.TorusGeometry(0.26, 0.09, 8, 14, Math.PI), 0xff3b3b, 0, 1.6, 0).rotation.z = Math.PI;
+  if (c.prop === 'helmet') M(new THREE.SphereGeometry(0.44, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2), 0x8d99a6, 0, 0.98, 0);
+  hero.add(g); return g;
+});
 // 모델용 변수 (모델을 못 불러오면 도형 그대로 달림)
-let heroModel = null, heroActs = null, heroAct = null;
+let heroModel = null, heroActs = null, heroAct = null, heroMixer = null;
 const heroMats = [], mixers = [], HUE = [0, 0.3, 0.55, 0.8];   // 캐릭터별 색 돌리기 값
 
 // 바닥 그림자 (거리감 도우미)
@@ -483,7 +601,7 @@ const shadow = new THREE.Mesh(new THREE.CircleGeometry(0.55, 20),
 shadow.rotation.x = -Math.PI / 2; scene.add(shadow);
 
 // 상태
-const p = { d: 0, x: 0, lane: 1, y: 0, vy: 0, jumps: 0, onGround: true, squash: 0, big: false, size: 1, inv: 0, magT: 0, dashT: 0 };
+const p = { d: 0, x: 0, lane: 1, y: 0, vy: 0, jumps: 0, onGround: true, squash: 0, big: false, size: 1, inv: 0, magT: 0, dashT: 0, prevLane: 1 };
 let state = 'ready', timer = 0, coinCount = 0, camY = 0, energy = CONFIG.energyMax, safeD = 0, msgT = 0, stars = 0;
 const $coins = document.getElementById('coins'), $prog = document.getElementById('prog'),
       $msg = document.getElementById('msg'), $fill = document.getElementById('fill'), $pick = document.getElementById('pick'), $buff = document.getElementById('buff');
@@ -491,6 +609,8 @@ const $coins = document.getElementById('coins'), $prog = document.getElementById
 function setChar(i) {
   charIdx = i;
   heroParts.forEach((g, k) => g.visible = !heroModel && k === i);
+  heroProps.forEach((g, k) => g.visible = k === i);
+  if (heroMixer) heroMixer.timeScale = CHARS[i].anim || 1;
   heroMats.forEach(x => { x.m.color.copy(x.c).offsetHSL(HUE[i], 0, 0); x.m.emissive.copy(x.m.color).multiplyScalar(0.28); });
   [...$pick.children].forEach((b, k) => b.classList.toggle('on', k === i));
 }
@@ -502,28 +622,120 @@ CHARS.forEach((c, i) => {
 });
 setChar(Math.max(0, Math.min(CHARS.length - 1, +QUERY.get('c') || 0)));
 const $themes = document.getElementById('themes');                    // 출발 전 화면 위쪽: 스테이지 고르기
+const playUrl = o => { const v = Object.assign({ t: LV.terrain, e: LV.enemy, i: LV.item, time: TIME }, o);
+  return '?t=' + v.t + '&e=' + v.e + '&i=' + v.i + '&time=' + v.time + '&c=' + charIdx + (QUERY.get('models') === '0' ? '&models=0' : ''); };
 const stageUrl = n => '?stage=' + n + '&c=' + charIdx + (QUERY.get('models') === '0' ? '&models=0' : '');
-STAGES.forEach((st, i) => {
-  const a = document.createElement('a'); a.textContent = st.name; a.href = '?stage=' + (i + 1);
-  a.addEventListener('click', e => { e.preventDefault(); location.search = stageUrl(i + 1); });
-  if (i + 1 === STAGE_NO) a.className = 'on';
-  $themes.appendChild(a);
-});
+const go = o => { location.search = playUrl(o); };                     // 레벨이나 시간대를 바꾸면 그 설정으로 길을 새로 만듦
+for (const [label, key, q] of [['지형', 'terrain', 't'], ['악당', 'enemy', 'e'], ['아이템', 'item', 'i']]) {   // 레벨 고르기 줄
+  const row = document.createElement('div');
+  const btn = (text, to) => { const b = document.createElement('a'); b.textContent = text; b.href = '#';
+    b.addEventListener('click', ev => { ev.preventDefault(); if (to !== LV[key]) go({ [q]: to }); }); row.appendChild(b); };
+  const name = document.createElement('span'); name.textContent = label; row.appendChild(name);
+  btn('−10', Math.max(1, LV[key] - 10)); btn('◀', Math.max(1, LV[key] - 1));
+  const num = document.createElement('b'); num.textContent = LV[key]; row.appendChild(num);
+  btn('▶', Math.min(LV_MAX, LV[key] + 1)); btn('+10', Math.min(LV_MAX, LV[key] + 10));
+  $themes.appendChild(row);
+}
+{ const row = document.createElement('div'), all = Math.round((LV.terrain + LV.enemy + LV.item) / 3);   // 전체 줄: 세 레벨을 한꺼번에 맞춤
+  const same = LV.terrain === LV.enemy && LV.enemy === LV.item, cl = v => Math.max(1, Math.min(LV_MAX, v));
+  const name = document.createElement('span'); name.textContent = '전체'; row.appendChild(name);
+  for (const [text, step] of [['−10', -10], ['◀', -1], [null, 0], ['▶', 1], ['+10', 10]]) {
+    if (!step) { const num = document.createElement('b'); num.textContent = same ? all : '~' + all; row.appendChild(num); continue; }
+    const b = document.createElement('a'); b.textContent = text; b.href = '#'; const to = cl(all + step);
+    b.addEventListener('click', ev => { ev.preventDefault(); if (!same || to !== all) go({ t: to, e: to, i: to }); }); row.appendChild(b);
+  }
+  $themes.insertBefore(row, $themes.firstChild); }
+{ const row = document.createElement('div');                           // 시간대 고르기 줄
+  for (const k in TIMES) {
+    const b = document.createElement('a'); b.textContent = TIMES[k][0]; b.href = '#'; if (k === TIME) b.className = 'on';
+    b.addEventListener('click', ev => { ev.preventDefault(); if (k !== TIME) go({ time: k }); }); row.appendChild(b);
+  }
+  $themes.appendChild(row); }
+{ const row = document.createElement('div');                           // 스테이지 줄 (맨 위). 스테이지를 고르면 레벨 줄은 숨김
+  STAGES.forEach((st, i) => {
+    const b = document.createElement('a'); b.textContent = st.name + ' Lv' + st.lv; b.href = '#'; if (STAGE_NO === i + 1) b.className = 'on';
+    b.addEventListener('click', ev => { ev.preventDefault(); if (STAGE_NO !== i + 1) location.search = stageUrl(i + 1); }); row.appendChild(b);
+  });
+  const c = document.createElement('a'); c.textContent = '직접 조절'; c.href = '#'; if (!STAGE_NO) c.className = 'on';
+  c.addEventListener('click', ev => { ev.preventDefault(); if (STAGE_NO) go({}); }); row.appendChild(c);
+  if (STAGE_NO) [...$themes.children].forEach(x => x.style.display = 'none');
+  $themes.insertBefore(row, $themes.firstChild); }
 $themes.addEventListener('pointerdown', e => e.stopPropagation());
 function loseEnergy(n) { energy -= n * (ch().hitScale || 1); return energy <= 0; }
-function gameOver() { energy = 0; state = 'over'; timer = 2.2; setMsg('에너지 끝!\n<small>처음부터 다시 달려요</small>'); }
-const startText = '스테이지 ' + STAGE.name + '\n<small>지형 ' + '★'.repeat(LV.terrain) + ' · 악당 ' + '★'.repeat(LV.enemy) + ' · 상자 ' + '★'.repeat(LV.box) + '</small>\n화면을 누르면 출발!\n<small>← → 또는 좌우로 밀기 = 옆 칸 · 누르기 / 스페이스 = 점프\n보라색 적은 밟기 · 초록 물약은 에너지 · 아래에서 캐릭터 고르기</small>';
+function gameOver() { SFX.over(); energy = 0; state = 'over'; timer = 2.2; setMsg('에너지 끝!\n<small>처음부터 다시 달려요</small>'); }
+const ZONE_NAME = { terrain: '지형 구간', enemy: '악당 구간', mix: '섞인 구간', rest: '쉬는 구간' };
+const startText = (STAGE_NO ? '스테이지 ' + STAGES[STAGE_NO - 1].name + '\n' : '') + '화면을 누르면 출발!\n<small>← → 또는 좌우로 밀기 = 옆 칸 · 누르기 / 스페이스 = 점프\n위에서 스테이지, 아래에서 캐릭터 고르기</small>';
 function setMsg(t) { $msg.innerHTML = t; }
 const curLane = () => Math.max(0, Math.min(2, Math.round(p.x / LW) + 1));
-const heroH = () => 0.9 * (p.big ? CONFIG.bigScale : 1) + 0.2;
+const heroH = () => 0.9 * (ch().size || 1) * (ch().tall || 1) * (p.big ? CONFIG.bigScale : 1) + 0.2;   // 키 (캐릭터마다 다름)
+
+/* ------------------------------------------------------------
+   소리 — 음원 파일 없이 브라우저에서 바로 만들어 냄 (효과음 + 배경 음악)
+   M 키나 화면의 소리 버튼으로 켜고 끔
+   ------------------------------------------------------------ */
+const SND = { on: true, ctx: null, master: null, lastCoin: 0 };
+try { SND.on = localStorage.getItem('runner-sound') !== 'off'; } catch (e) {}
+function audioInit() {                              // 브라우저 규칙상 첫 누르기 때 켜야 함
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  if (!SND.ctx) { SND.ctx = new AC(); SND.master = SND.ctx.createGain(); SND.master.gain.value = SND.on ? 1 : 0; SND.master.connect(SND.ctx.destination); }
+  if (SND.ctx.state === 'suspended') SND.ctx.resume();
+}
+function tone(freq, dur, type, vol, slide, delay) {  // 음 하나: 높이, 길이, 음색, 크기, 끝 높이 배율, 몇 초 뒤
+  if (!SND.ctx) return;
+  const t = SND.ctx.currentTime + (delay || 0), o = SND.ctx.createOscillator(), g = SND.ctx.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, t);
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq * slide), t + dur);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g); g.connect(SND.master); o.start(t); o.stop(t + dur + 0.03);
+}
+const seq = (notes, dur, type, vol, gap) => notes.forEach((f, i) => tone(f, dur, type, vol, 0, i * gap));
+const SFX = {
+  jump:   () => tone(380, 0.16, 'square', 0.08, 1.9),
+  jump2:  () => tone(520, 0.16, 'square', 0.08, 1.8),
+  coin:   () => { const n = performance.now(); if (n - SND.lastCoin < 45) return; SND.lastCoin = n; tone(988, 0.07, 'square', 0.06); tone(1319, 0.14, 'square', 0.06, 0, 0.06); },
+  stomp:  () => { tone(220, 0.12, 'triangle', 0.2, 0.4); tone(660, 0.1, 'square', 0.06, 1.5, 0.05); },
+  hit:    () => tone(180, 0.3, 'sawtooth', 0.13, 0.35),
+  fall:   () => tone(400, 0.5, 'sine', 0.15, 0.2),
+  box:    () => tone(150, 0.08, 'square', 0.12, 0.7),
+  item:   () => seq([523, 659, 784, 1047], 0.12, 'triangle', 0.13, 0.07),
+  potion: () => { tone(440, 0.1, 'sine', 0.15, 1.5); tone(660, 0.18, 'sine', 0.15, 1.3, 0.09); },
+  star:   () => seq([784, 988, 1175, 1568], 0.16, 'square', 0.08, 0.08),
+  goal:   () => seq([523, 659, 784, 1047, 784, 1047], 0.2, 'square', 0.1, 0.13),
+  over:   () => seq([392, 330, 262, 196], 0.28, 'triangle', 0.15, 0.2),
+};
+// 배경 음악: 8분음표 32칸(4마디)을 되풀이. 숫자는 음 높이(60 = 가온 도, 0 = 쉼). 시간대마다 조와 빠르기가 다름
+const BGM = { step: 0, next: 0, tempo: TIME === 'night' ? 112 : TIME === 'sunset' ? 124 : 132, shift: { day: 0, sunset: -3, night: -5 }[TIME],
+  mel:  [72,0,76,0,79,76,72,0,  74,0,77,0,81,77,74,0,  76,79,84,0,81,79,76,0,  74,72,74,76,72,0,0,0],
+  bass: [48,0,55,0,48,0,55,0,  53,0,60,0,53,0,60,0,  45,0,52,0,45,0,52,0,  43,0,50,0,43,0,55,0] };
+setInterval(() => {                                  // 달리는 동안만 연주
+  if (!SND.ctx || (state !== 'play' && state !== 'hurt')) { BGM.next = 0; return; }
+  const now = SND.ctx.currentTime, sp = 30 / BGM.tempo, hz = m => 440 * Math.pow(2, (m + BGM.shift - 69) / 12);
+  if (BGM.next < now) BGM.next = now + 0.05;
+  while (BGM.next < now + 0.25) {
+    const i = BGM.step % 32, d = BGM.next - now;
+    if (BGM.mel[i]) tone(hz(BGM.mel[i]), sp * 0.9, 'square', 0.03, 0, d);
+    if (BGM.bass[i]) tone(hz(BGM.bass[i]), sp * 1.6, 'triangle', 0.085, 0, d);
+    if (i % 4 === 0) tone(110, 0.09, 'sine', 0.1, 0.4, d);
+    BGM.step++; BGM.next += sp;
+  }
+}, 50);
+const $snd = document.getElementById('snd');
+function setSound(on) {
+  SND.on = on; $snd.textContent = on ? '소리 켬' : '소리 끔';
+  if (SND.master) SND.master.gain.value = on ? 1 : 0;
+  try { localStorage.setItem('runner-sound', on ? 'on' : 'off'); } catch (e) {}
+}
+$snd.addEventListener('pointerdown', e => { e.stopPropagation(); e.preventDefault(); audioInit(); setSound(!SND.on); });
+setSound(SND.on);
 
 function reset() {                 // 처음부터 다시
-  Object.assign(p, { d: 0, x: 0, lane: 1, y: 0, vy: 0, jumps: 0, onGround: true, squash: 0, big: false, size: 1, inv: 0, magT: 0, dashT: 0 });
+  Object.assign(p, { d: 0, x: 0, lane: 1, y: 0, vy: 0, jumps: 0, onGround: true, squash: 0, big: false, size: 1, inv: 0, magT: 0, dashT: 0, prevLane: 1 });
   coinCount = 0; camY = 0; energy = CONFIG.energyMax; safeD = 0; msgT = 0; stars = 0;
   pickups.forEach(k => { k.got = false; k.g.visible = true; });
   $pick.style.display = 'flex'; $themes.style.display = 'flex';
-  enemies.forEach(e => { e.d = e.d0; e.t = e.t0; e.dir = -1; e.x = (e.lane - 1) * LW; e.dead = false; e.g.visible = true; e.g.scale.set(1, 1, 1); });
-  coins.forEach(c => { c.got = false; c.g.visible = true; });
+  enemies.forEach(e => { e.d = e.d0; e.t = e.t0; e.dir = -1; e.x = (e.lane - 1) * LW; e.dead = false; e.g.visible = true; e.g.scale.setScalar(e.sc); });
+  coins.forEach(c => { c.got = false; c.fly = 0; c.g.visible = true; c.g.position.set(c.x, c.y, -c.d); c.g.scale.setScalar(1); });
   boxes.forEach(b => { b.used = false; b.mesh.material = boxMatNew; });
   item.active = false; itemMesh.visible = false;
   state = 'ready'; setMsg(startText);
@@ -533,26 +745,27 @@ function respawn() {               // 근처의 안전한 칸에서 다시
   search: for (; d >= 0; d -= 1) for (const l of [p.lane, 1, 0, 2])
     if (groundLane(d, l) !== null && groundLane(d + 3, l) !== null) { lane = l; break search; }
   d = Math.max(d, 0);
-  Object.assign(p, { d, lane, x: (lane - 1) * LW, y: groundLane(d, lane) || 0, vy: 0, jumps: 0, onGround: true });
+  Object.assign(p, { d, lane, x: (lane - 1) * LW, y: groundLane(d, lane) || 0, vy: 0, jumps: 0, onGround: true, prevLane: lane });
   safeD = d; state = 'play'; setMsg('');
 }
 function fail() {
+  SFX.fall();
   if (p.big) { p.big = false; state = 'hurt'; timer = 0.9; setMsg('작아졌어요!\n<small>에너지는 그대로</small>'); return; }
-  if (loseEnergy(CONFIG.pitCost)) gameOver();
+  if (loseEnergy(CONFIG.pitCost * HARD.pitHit)) gameOver();
   else { state = 'hurt'; timer = 0.9; setMsg('아이쿠!\n<small>에너지가 깎였어요</small>'); }
 }
 function hitEnemy() {              // 적에게 닿음: 멈추지 않고 깜빡이며 계속 달림
-  p.inv = CONFIG.hitSafeTime; msgT = 0.9;
+  p.inv = CONFIG.hitSafeTime; msgT = 0.9; SFX.hit();
   if (p.big) { p.big = false; setMsg('작아졌어요!'); return; }
-  if (loseEnergy(CONFIG.enemyCost)) gameOver();
+  if (loseEnergy(CONFIG.enemyCost * HARD.enemyHit)) gameOver();
   else setMsg('아야!\n<small>에너지가 깎였어요</small>');
 }
-function start() { if (state === 'ready') { state = 'play'; setMsg(''); $pick.style.display = 'none'; $themes.style.display = 'none'; return true; } return false; }
+function start() { if (state === 'ready') { audioInit(); state = 'play'; setMsg(''); $pick.style.display = 'none'; $themes.style.display = 'none'; return true; } return false; }
 function jump() {
   if (start() || state !== 'play') return;
   if (p.jumps < (ch().maxJumps || CONFIG.maxJumps)) {
-    p.vy = CONFIG.jumpPower * (p.jumps === 0 ? 1 : 0.9);
-    p.jumps++; p.onGround = false; p.squash = -0.25;
+    p.vy = (ch().jumpPower || CONFIG.jumpPower) * (p.jumps === 0 ? 1 : 0.9);
+    p.jumps++; p.onGround = false; p.squash = -0.25; (p.jumps > 1 ? SFX.jump2 : SFX.jump)();
   }
 }
 function moveLane(dir) {
@@ -561,6 +774,7 @@ function moveLane(dir) {
 }
 addEventListener('keydown', e => {
   if (e.repeat) return;
+  if (e.code === 'KeyM') { audioInit(); setSound(!SND.on); return; }
   if (state === 'ready' && /^Digit[1-4]$/.test(e.code)) { setChar(+e.code.slice(5) - 1); return; }
   if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') { e.preventDefault(); jump(); }
   else if (e.code === 'ArrowLeft' || e.code === 'KeyA') { e.preventDefault(); moveLane(-1); }
@@ -581,21 +795,28 @@ addEventListener('pointercancel', () => { touch = null; });
 function update(dt) {
   if (state === 'hurt') { timer -= dt; if (timer <= 0) respawn(); return; }
   if (state === 'over') { timer -= dt; if (timer <= 0) reset(); return; }
-  if (state === 'goal') {                                              // 도착: 다음 스테이지로 (마지막이면 1번으로)
+  if (state === 'goal') {                                              // 도착: 결과를 잠깐 보여주고 같은 설정으로 다시
     timer -= dt;
-    if (timer <= 0) { state = 'leaving'; location.search = stageUrl(STAGE_NO < STAGES.length ? STAGE_NO + 1 : 1); }
+    if (timer <= 0) { if (STAGE_NO) { state = 'leaving'; location.search = stageUrl(STAGE_NO < STAGES.length ? STAGE_NO + 1 : 1); } else reset(); }
     return;
   }
   if (state !== 'play') return;
 
-  energy -= CONFIG.drain * (ch().drainScale || 1) * dt;                // 시간이 지나면 에너지가 줄어듦
+  energy -= CONFIG.drain * HARD.drain * (ch().drainScale || 1) * dt;                // 시간이 지나면 에너지가 줄어듦
   if (energy <= 0) { gameOver(); return; }
   if (p.magT > 0) p.magT -= dt;
   if (p.dashT > 0) p.dashT -= dt;
   p.d += CONFIG.speed * (p.dashT > 0 ? 1.7 : 1) * dt;
-  const tx = (p.lane - 1) * LW, mx = CONFIG.laneSpeed * dt;
+  const tx = (p.lane - 1) * LW, mx = (ch().laneSpeed || CONFIG.laneSpeed) * dt;
   p.x += Math.max(-mx, Math.min(mx, tx - p.x));
-  const lane = curLane(); let g = groundLane(p.d, lane);
+  let lane = curLane(), g = groundLane(p.d, lane);
+  if (g !== null && g > p.y + CONFIG.stepUp && lane !== p.prevLane) {   // 옆에서 담에 부딪힘: 다치지 않고 원래 칸으로 튕겨 나옴
+    const back = groundLane(p.d, p.prevLane);
+    if (back === null || back <= p.y + CONFIG.stepUp) {
+      p.x = (p.prevLane - 1) * LW + (lane - p.prevLane) * (LW / 2 - 0.06); p.lane = p.prevLane; lane = p.prevLane; g = back; SFX.box();
+    }
+  }
+  p.prevLane = lane;
   if (p.dashT > 0 && g === null) { const th = terrainH(p.d); g = th === null ? p.y : th; }   // 번개 질주: 구덩이·구멍 위를 달림
   if (g !== null && g > p.y + CONFIG.stepUp) { fail(); return; }      // 벽에 부딪힘
 
@@ -616,11 +837,11 @@ function update(dt) {
   for (const b of boxes) {
     if (b.lane !== lane || Math.abs(b.d - p.d) > 0.75 || p.vy <= 0) continue;
     if (p.y + heroH() >= b.bottom && p.y < b.bottom) {
-      p.y = b.bottom - heroH(); p.vy = -3; b.bump = 0.25;
+      p.y = b.bottom - heroH(); p.vy = -3; b.bump = 0.25; SFX.box();
       if (!b.used) {
         b.used = true; b.mesh.material = boxMatUsed;
-        const loot = BOX_LOOT[LV.box];
-        Object.assign(item, { active: true, kind: loot[Math.floor(Math.random() * loot.length)], d: b.d, lane: b.lane, y: b.bottom + 1.3, vy: 7, vd: CONFIG.speed + 3 });
+        const loot = Object.keys(ITEM_UNLOCK).filter(k => ITEM_UNLOCK[k] <= LV.item);
+        Object.assign(item, { active: true, kind: loot[Math.floor(Math.random() * loot.length)], d: b.d, lane: b.lane, y: b.bottom + 1.3, vy: 5, vd: CONFIG.speed + 2.5 });   // 낮게 튀어나와 가까이 떨어짐
       }
     }
   }
@@ -631,12 +852,12 @@ function update(dt) {
     if (ig !== null && item.y <= ig + 0.5 && item.y > ig - 0.8) { item.y = ig + 0.5; item.vy = 0; item.vd = 1.5; }
     if (item.y < -6 || item.d < p.d - 6) item.active = false;
     if (Math.abs(item.d - p.d) < 0.9 && item.lane === lane && Math.abs(item.y - (p.y + 0.5)) < 1.3) {
-      item.active = false; p.squash = -0.35; msgT = 1.2;
+      item.active = false; p.squash = -0.35; msgT = 1.2; SFX.item();
       if (item.kind === 'grow') { if (p.big) coinCount += 5; else p.big = true; setMsg('<small>쑥쑥! 몸이 커졌어요</small>'); }
-      else if (item.kind === 'heart') { energy = Math.min(CONFIG.energyMax, energy + 40); setMsg('<small>에너지 +40</small>'); }
+      else if (item.kind === 'heart') { energy = Math.min(CONFIG.energyMax, energy + 30); setMsg('<small>에너지 +30</small>'); }
       else if (item.kind === 'coins') { coinCount += 10; setMsg('<small>동전 +10</small>'); }
-      else if (item.kind === 'magnet') { p.magT = 8; setMsg('<small>자석! 동전이 끌려와요</small>'); }
-      else { p.dashT = 4.5; setMsg('<small>번개 질주!</small>'); }
+      else if (item.kind === 'magnet') { p.magT = 6 + U.item * 6; setMsg('<small>자석! 동전이 끌려와요</small>'); }
+      else { p.dashT = 3.5 + U.item * 3; setMsg('<small>번개 질주!</small>'); }
     }
   }
 
@@ -646,20 +867,22 @@ function update(dt) {
   for (const e of enemies) {
     if (e.dead) continue;
     if (Math.abs(e.d - p.d) < 35) {
-      if (e.type === 'S') { e.t += dt; e.x = Math.sin(e.t * (1.2 + LV.enemy * 0.4)) * LW; }           // 게: 좌우로 오감
+      if (e.type === 'S') { e.t += dt * e.sf; e.x = Math.sin(e.t * (1.4 + U.enemy * 2.4)) * LW; }           // 게: 좌우로 오감
       else if (e.type !== 'F') {                                         // 슬라임은 걸어오고, 해골은 가까워지면 돌진
-        const sp = e.type === 'C' ? (Math.abs(e.d - p.d) < 16 ? 6 : 0) : CONFIG.enemySpeed * (0.5 + LV.enemy * 0.5);
-        const nd = e.d + e.dir * sp * dt;
-        if (groundLane(nd + e.dir * 0.6, e.lane) === null) e.dir *= -1; else e.d = nd;
+        const sp = e.type === 'C' ? (Math.abs(e.d - p.d) < 18 ? 6 + U.enemy * 6 : 0) : CONFIG.enemySpeed * (1 + U.enemy * 3);
+        const nd = e.d + e.dir * sp * e.sf * dt;
+        const gn = groundLane(nd + e.dir * 0.6, e.lane), gc = groundLane(e.d, e.lane);
+        if (gn === null || gc === null || Math.abs(gn - gc) > 0.8) e.dir *= -1; else e.d = nd;   // 구덩이·턱·담 앞에서 돌아섬
       }
     }
-    e.y = (terrainH(e.d) || 0) + (e.type === 'F' ? 1.7 : 0);            // 벌은 머리 높이에 떠 있음
+    e.y = ((e.type === 'S' ? terrainH(e.d) : groundLane(e.d, e.lane)) || terrainH(e.d) || 0) + (e.type === 'F' ? 1.7 : 0);            // 벌은 머리 높이에 떠 있음
     if (Math.abs(e.d - p.d) < 1.0 && Math.abs(e.x - p.x) < 1.0) {
-      if (!p.onGround && p.y >= e.y + 0.15 && p.y <= e.y + 1.3) {       // 너그러운 밟기: 공중에서 닿기만 해도 밟힘
+      if (!p.onGround && p.y >= e.y + (0.15 + 0.4 * U.enemy) * e.sc && p.y <= e.y + 1.3 * e.sc + 0.3) {       // 밟기: 낮은 레벨은 공중에서 닿기만 해도, 높은 레벨은 확실히 위에서
         e.dead = true; e.deadT = 0.3; coinCount += 2;
+        SFX.stomp(); energy = Math.min(CONFIG.energyMax, energy + CONFIG.stompGain * e.sc);   // 밟으면 에너지가 조금 참 (큰 악당일수록 더)
         p.vy = CONFIG.jumpPower * CONFIG.stompBounce; p.jumps = 1; p.onGround = false; p.squash = -0.25;
-      } else if (p.y < e.y + 0.8 && p.y + heroH() > e.y + 0.1) {         // 몸이 겹칠 때만 (벌 밑으로는 지나감)
-        if (p.dashT > 0) { e.dead = true; e.deadT = 0.3; coinCount += 2; }   // 번개 질주 중에는 악당을 날려버림
+      } else if (p.y < e.y + 0.8 * e.sc && p.y + heroH() > e.y + 0.1) {         // 몸이 겹칠 때만 (벌 밑으로는 지나감)
+        if (p.dashT > 0) { e.dead = true; e.deadT = 0.3; coinCount += 2; SFX.stomp(); }   // 번개 질주 중에는 악당을 날려버림
         else if (p.inv <= 0) { hitEnemy(); if (state !== 'play') return; }
       }
     }
@@ -668,28 +891,31 @@ function update(dt) {
   for (const k of pickups) {
     if (k.got || Math.abs(k.d - p.d) > 0.9 || Math.abs(k.x - p.x) > 1.0 || Math.abs(k.y - (p.y + 0.5)) > 1.2) continue;
     k.got = true; k.g.visible = false;
-    if (k.kind === 'potion') energy = Math.min(CONFIG.energyMax, energy + CONFIG.potionGain); else stars++;
+    if (k.kind === 'potion') { energy = Math.min(CONFIG.energyMax, energy + CONFIG.potionGain); SFX.potion(); } else { stars++; SFX.star(); }
   }
   const mag = p.magT > 0 ? 5 : (ch().magnet || 0.9);                   // 자석이는 옆 칸, 자석 아이템은 3칸 전부
   for (const c of coins) {
     if (!c.got && Math.abs(c.d - p.d) < (mag > 4 ? 2.6 : mag > 1 ? 1.4 : 0.8) && Math.abs(c.x - p.x) < mag && Math.abs(c.y - (p.y + 0.5)) < (mag > 4 ? 3 : mag > 1 ? 1.6 : 1.0)) {
-      c.got = true; c.g.visible = false; coinCount++;
+      c.got = true; coinCount++; SFX.coin();
+      if (mag > 1 && (Math.abs(c.x - p.x) > 0.9 || Math.abs(c.d - p.d) > 0.8)) c.fly = 0.24;   // 멀리서 끌려온 동전은 날아오는 모습을 보여줌
+      else c.g.visible = false;
     }
   }
-  if (p.d >= total - 6) { state = 'goal'; timer = 3; setMsg((STAGE_NO < STAGES.length ? '도착!' : '모든 스테이지 완료!') + '\n<small>동전 ' + coinCount + '개 · 별 동전 ' + '★'.repeat(stars) + '☆'.repeat(BIG_COINS.length - stars)
-      + '\n' + (STAGE_NO < STAGES.length ? '다음: 스테이지 ' + STAGES[STAGE_NO].name : '처음 스테이지로 돌아갑니다') + '</small>'); }
+  if (p.d >= total - 6) { state = 'goal'; timer = 3.5; SFX.goal(); setMsg((STAGE_NO === STAGES.length ? '모든 스테이지 완료!' : '도착!') + '\n<small>' + (STAGE_NO && STAGE_NO < STAGES.length ? '다음: 스테이지 ' + STAGES[STAGE_NO].name + '\n' : '') + '지형 ' + LV.terrain + ' · 악당 ' + LV.enemy + ' · 아이템 ' + LV.item + '\n동전 ' + coinCount + '개 · 별 동전 ' + '★'.repeat(stars) + '☆'.repeat(BIG_COINS.length - stars) + ' · 남은 에너지 ' + Math.round(energy) + '</small>'); }
 }
 
 function draw(dt, t) {
   p.squash += (0 - p.squash) * Math.min(1, dt * 12);
   p.size += ((p.big ? CONFIG.bigScale : 1) - p.size) * Math.min(1, dt * 10);
-  hero.position.set(p.x, Math.max(p.y, -6), -p.d);
-  hero.scale.set(p.size * (1 + p.squash), p.size * (1 - p.squash), p.size * (1 + p.squash));
+  const cz = ch(), sz = p.size * (cz.size || 1);                         // 캐릭터마다 크기·비율·통통 튀는 정도가 다름
+  const bob = p.onGround && state === 'play' ? Math.abs(Math.sin(t * 9 * (cz.anim || 1))) * (cz.bob || 0) : 0;
+  hero.position.set(p.x, Math.max(p.y, -6) + bob, -p.d);
+  hero.scale.set(sz * (cz.wide || 1) * (1 + p.squash), sz * (cz.tall || 1) * (1 - p.squash), sz * (cz.wide || 1) * (1 + p.squash));
   hero.rotation.x = p.onGround ? 0 : hero.rotation.x - dt * 7 * (p.jumps > 1 ? 1 : 0);
   hero.rotation.z = ((p.lane - 1) * LW - p.x) * -0.25;                 // 옆으로 갈 때 살짝 기울기
   hero.visible = (state !== 'hurt' && p.inv <= 0) || Math.floor(t * 12) % 2 === 0;
   for (const e of enemies) {
-    if (e.dead) { e.deadT -= dt; e.g.scale.set(1.3, 0.2, 1.3); e.g.visible = e.deadT > 0; }
+    if (e.dead) { e.deadT -= dt; e.g.scale.set(1.3 * e.sc, 0.2 * e.sc, 1.3 * e.sc); e.g.visible = e.deadT > 0; }
     e.g.position.set(e.x, e.y + (e.dead ? 0 : Math.abs(Math.sin(t * 6 + e.d0)) * 0.12), -e.d);
   }
 
@@ -699,7 +925,17 @@ function draw(dt, t) {
     shadow.position.set(p.x, g + 0.08, -p.d);
     const k = p.size * Math.max(0.45, 1 - (p.y - g) * 0.18); shadow.scale.set(k, k, k);
   }
-  for (const c of coins) if (c.g.visible) c.g.rotation.y = t * 3 + c.d;
+  for (const c of coins) {
+    if (!c.g.visible) continue;
+    c.g.rotation.y = t * (c.fly > 0 ? 14 : 3) + c.d;
+    if (c.fly > 0) {                                                   // 자석에 끌려 캐릭터에게 날아오며 작아짐
+      c.fly -= dt;
+      const k = Math.min(1, dt / Math.max(c.fly, 0.016)), q = c.g.position;
+      q.x += (p.x - q.x) * k; q.y += (p.y + 0.6 - q.y) * k; q.z += (-p.d - q.z) * k;
+      c.g.scale.setScalar(0.45 + Math.max(c.fly, 0) * 2.3);
+      if (c.fly <= 0) c.g.visible = false;
+    }
+  }
   for (const mx of mixers) mx.update(dt);
   if (heroActs) {                                                      // 달리기·점프·대기 동작 바꾸기
     const want = state === 'ready' ? 'idle' : p.onGround ? 'run' : 'jump';
@@ -716,7 +952,8 @@ function draw(dt, t) {
   $buff.textContent = (p.magT > 0 ? '자석 ' + Math.ceil(p.magT) + '초  ' : '') + (p.dashT > 0 ? '번개 질주 ' + Math.ceil(p.dashT) + '초' : '');
   if (item.active) { itemMesh.position.set((item.lane - 1) * LW, item.y, -item.d); itemMesh.rotation.y = t * 4; }
 
-  camY += (Math.max(p.y, 0) - camY) * Math.min(1, dt * 4);
+  const ahead = terrainH(p.d + 8), py = Math.max(p.y, 0);                // 앞에 언덕이 있으면 카메라가 미리 올라가 너머가 보이게 함
+  camY += ((ahead !== null && ahead > py ? (py + ahead) / 2 + 0.6 : py) - camY) * Math.min(1, dt * 4);
   camera.position.set(p.x * 0.5, camY + CONFIG.camUp, -p.d + CONFIG.camBack);
   camera.lookAt(p.x * 0.3, camY + 1.2, -(p.d + CONFIG.camLookAhead));
   sun.target.position.set(0, camY, -p.d - 8);                         // 햇빛과 그림자 영역이 캐릭터를 따라감
@@ -729,7 +966,8 @@ function draw(dt, t) {
   const ratio = Math.max(0, energy) / CONFIG.energyMax;
   $fill.style.width = (ratio * 100) + '%';
   $fill.style.background = ratio < 0.25 ? '#ff3b3b' : ratio < 0.5 ? '#ffb03b' : '#4fdc7a';
-  $prog.textContent = Math.min(100, Math.round(p.d / (total - 6) * 100)) + '%';
+  let zn = ''; for (const [zd, z] of ZONES) if (p.d >= zd) zn = ZONE_NAME[z];
+  $prog.textContent = (zn ? zn + ' · ' : '') + Math.min(100, Math.round(p.d / (total - 6) * 100)) + '%';
   renderer.render(scene, camera);
 }
 
@@ -762,7 +1000,7 @@ if (THREE.GLTFLoader && new URLSearchParams(location.search).get('models') !== '
     prep(g.scene);
     g.scene.traverse(o => { if (o.isMesh) for (const m of [].concat(o.material)) if (!heroMats.some(x => x.m === m)) heroMats.push({ m, c: m.color.clone() }); });
     const m = fit(g.scene, MODEL_SIZE.hero); m.rotation.y = Math.PI; hero.add(m); heroModel = m;
-    const mx = new THREE.AnimationMixer(g.scene); mixers.push(mx);
+    const mx = new THREE.AnimationMixer(g.scene); mixers.push(mx); heroMixer = mx;
     const act = n => mx.clipAction(g.animations.find(a => a.name.endsWith('|' + n)));
     heroActs = { run: act('Run'), jump: act('Jump_Idle'), idle: act('Idle') };
     setChar(charIdx);
